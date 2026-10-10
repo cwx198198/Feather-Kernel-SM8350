@@ -1,0 +1,247 @@
+name: Build Feather 5.4.302 (lahaina / lemonade) - Docker patches
+
+# 基于 9RT eevdf 分支的 9rt_KernelSU-Next_Docker.yaml 改写
+#   - 目标: OnePlus 9 / 9 Pro (lemonade / lemonadep / lemonades / lemonadev)
+#   - 内核: 5.4.302-Feather（本仓库自带，自包含构建，无需外部 modules 仓库）
+#   - Docker 补丁: 保留（overlayfs util.c / module.c / sched user.h + SYSVIPC kabi）
+#   - KSU: 跟随内核源码（树内 SukiSU Ultra，不下载固定版本）
+
+on:
+  push:
+    branches:
+      - 'feather'
+      - 'release/**'
+      - 'perf/**'
+  workflow_dispatch:
+    inputs:
+      docker_patches:
+        description: '应用 Docker / Droidspaces 补丁'
+        type: boolean
+        default: true
+
+env:
+  KERNEL_DIR: kernel/msm-5.4
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android17-release/clang-r563880c.tar.gz
+
+jobs:
+  build:
+    name: Compile 5.4.302-Feather
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Configure Fast APT Mirror
+        uses: vegardit/fast-apt-mirror.sh@v1
+
+      - name: Make Build Environment
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            kmod cpio binutils cmake git wget pahole automake flex lzop bison gperf \
+            build-essential zip curl zlib1g-dev libxml2-utils bzip2 libbz2-dev \
+            libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make \
+            optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom \
+            libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev \
+            lib32z-dev libgl1-mesa-dev xsltproc unzip dwarves device-tree-compiler \
+            python3 ccache git-lfs gnupg imagemagick libelf-dev libncurses-dev \
+            libsdl1.2-dev gpart fuse2fs e2fsck-static icu-doc rsync adb fastboot \
+            libstdc++6 python-is-python3 gcc-aarch64-linux-gnu
+          mkdir -p kernel
+
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          path: kernel/msm-5.4
+          fetch-depth: 1
+
+      - name: Prepare Compiler (AOSP clang r563880c)
+        run: |
+          mkdir -p compiler/clang-bin
+          curl -fL --connect-timeout 30 --retry 5 --retry-delay 5 \
+            "$CLANG_URL" -o clang.tar.gz
+          tar -xzf clang.tar.gz -C compiler/clang-bin
+          rm -f clang.tar.gz
+          compiler/clang-bin/bin/clang --version
+
+      - name: Verify in-tree KernelSU (KSU follows source)
+        run: |
+          echo '--- 树内 KernelSU ---'
+          ls -la $KERNEL_DIR/KernelSU/ $KERNEL_DIR/KernelSU/kernel/
+          echo '--- defconfig 里的 KSU 开关 ---'
+          grep -nE 'CONFIG_KSU' $KERNEL_DIR/arch/arm64/configs/vendor/lahaina-qgki_defconfig || true
+          test -f $KERNEL_DIR/KernelSU/kernel/Kconfig || { echo '错误: 树内 KernelSU 缺失'; exit 1; }
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-feather-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-feather-${{ github.ref_name }}-
+            ccache-feather-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=3G
+          ccache --set-config=compression=true
+          ccache --set-config=compiler_check=content
+          ccache --set-config=sloppiness=time_macros,include_file_mtime,include_file_ctime,file_stat_matches
+          ccache --zero-stats || true
+          ccache --show-config | head -25
+
+      - name: Apply Docker / Droidspaces patches
+        if: ${{ github.event.inputs.docker_patches != 'false' }}
+        run: |
+          cd $KERNEL_DIR
+          echo '=== Docker 补丁: overlayfs / module / sched-user ==='
+          mkdir -p .docker_backup
+          cp -f fs/overlayfs/util.c            .docker_backup/util.c.orig
+          cp -f kernel/module.c                .docker_backup/module.c.orig
+          cp -f include/linux/sched/user.h     .docker_backup/user.h.orig
+
+          curl -fLSs --retry 5 \
+            'https://github.com/miaizhe/Kernel_oppo_sm7325_Reno10/releases/download/boot/util.c' \
+            -o fs/overlayfs/util.c
+          curl -fLSs --retry 5 \
+            'https://github.com/miaizhe/Kernel_oppo_sm7325_Reno10/releases/download/boot/module.c' \
+            -o kernel/module.c
+          curl -fLSs --retry 5 \
+            'https://github.com/miaizhe/Kernel_oppo_sm7325_Reno10/releases/download/boot/user.h' \
+            -o include/linux/sched/user.h
+
+          echo '  下载文件大小:'
+          wc -c fs/overlayfs/util.c kernel/module.c include/linux/sched/user.h
+
+          echo '=== SYSVIPC ABI padding 补丁 ==='
+          curl -fLSs --retry 5 \
+            'https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch' \
+            -o 001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch
+          if patch -p1 --forward < 001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch; then
+            echo '  SYSVIPC kabi 补丁已应用'
+          else
+            echo '  !! SYSVIPC kabi 补丁未干净应用（上下文不匹配），已跳过'
+            echo '     这不影响编译，但 CONFIG_SYSVIPC 可能破坏 KMI'
+          fi
+          rm -f 001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch
+          echo '=== Docker 补丁完成 ==='
+
+      - name: Compile Kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/compiler/clang-bin/bin:$PATH"
+          export CCACHE_DIR="$HOME/.ccache"
+          export CCACHE_BASEDIR="$GITHUB_WORKSPACE"
+          export CCACHE_COMPILERCHECK=content
+          cd $KERNEL_DIR
+
+          echo '=== defconfig ==='
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="ccache clang" vendor/lahaina-qgki_defconfig
+
+          # ---------- Docker / Droidspaces 需要的命名空间与 cgroup ----------
+          ./scripts/config --file out/.config \
+            -e CONFIG_USER_NS \
+            -e CONFIG_PID_NS \
+            -e CONFIG_IPC_NS \
+            -e CONFIG_NET_NS \
+            -e CONFIG_UTS_NS \
+            -e CONFIG_CHECKPOINT_RESTORE \
+            -e CONFIG_SYSVIPC \
+            -e CONFIG_POSIX_MQUEUE \
+            -e CONFIG_TMPFS_POSIX_ACL \
+            -e CONFIG_TMPFS_XATTR
+          ./scripts/config --file out/.config \
+            -e CONFIG_CGROUP_PIDS \
+            -e CONFIG_CGROUP_FREEZER \
+            -e CONFIG_CPUSETS \
+            -e CONFIG_MEMCG \
+            -e CONFIG_BLK_CGROUP \
+            -e CONFIG_BLK_DEV_THROTTLING \
+            -e CONFIG_DEVTMPFS \
+            -e CONFIG_DEVTMPFS_MOUNT \
+            -e CONFIG_OVERLAY_FS \
+            -e CONFIG_OVERLAY_FS_REDIRECT_DIR \
+            -e CONFIG_OVERLAY_FS_INDEX
+
+          # ---------- KSU 跟随内核源码: 只做保底，不下载任何外部版本 ----------
+          ./scripts/config --file out/.config \
+            -e CONFIG_KSU \
+            -e CONFIG_KSU_SUSFS \
+            -e CONFIG_KSU_SUSFS_SUS_PATH \
+            -e CONFIG_KSU_SUSFS_SUS_MOUNT \
+            -e CONFIG_KSU_SUSFS_SUS_KSTAT \
+            -e CONFIG_KSU_SUSFS_SUS_MAP \
+            -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+            -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e CONFIG_KSU_SUSFS_ENABLE_LOG
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          echo '=== 关键配置核对 ==='
+          grep -E 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_SYSVIPC=|CONFIG_OVERLAY_FS=|CONFIG_USER_NS=' out/.config || true
+
+          echo '=== 开始编译 ==='
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="ccache clang" -j$(nproc)
+
+          echo '=== 编译产物 ==='
+          ls -la out/arch/arm64/boot/Image
+          ccache --show-stats || true
+
+      - name: Package with AnyKernel3
+        run: |
+          BUILD_DATE=$(date +%Y%m%d)
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_ENV
+          
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          rm -rf AnyKernel3/.git
+          
+          # Feather 自带打包器: Image -> boot, dtb -> vendor_boot, dtbo -> dtbo
+          DTS=$KERNEL_DIR/out/arch/arm64/boot/dts/vendor/oplus/lemonadev
+          if [ ! -d "$DTS" ]; then
+            echo "错误: 找不到 DTB 目录 $DTS"
+            echo "已有的 dts 输出目录:"
+            find $KERNEL_DIR/out/arch/arm64/boot/dts -maxdepth 4 -type d -name "lemonade*" || true
+            exit 1
+          fi
+          echo "--- DTB 目录内容 ---"
+          ls -la "$DTS" | head -20
+          
+          bash $KERNEL_DIR/anykernel/build-package.sh \
+            AnyKernel3 \
+            $KERNEL_DIR/out \
+            "$GITHUB_WORKSPACE/Feather-5.4.302-lahaina-Docker-$BUILD_DATE.zip"
+          
+          echo '--- 打包内容 ---'
+          unzip -l "$GITHUB_WORKSPACE/Feather-5.4.302-lahaina-Docker-$BUILD_DATE.zip"
+
+      - name: Collect standalone Image
+        run: |
+          cp $KERNEL_DIR/out/arch/arm64/boot/Image \
+             "$GITHUB_WORKSPACE/Image-5.4.302-Feather-$BUILD_DATE"
+          ls -la $GITHUB_WORKSPACE/*.zip $GITHUB_WORKSPACE/Image-*
+
+      - name: Upload Flashable Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Feather-5.4.302-lahaina-Docker
+          path: |
+            Feather-5.4.302-lahaina-Docker-*.zip
+            Image-5.4.302-Feather-*
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Feather 5.4.302 (lahaina) 构建结果'
+            echo ''
+            echo '| 项 | 值 |'
+            echo '| --- | --- |'
+            echo "| 分支 | ${{ github.ref_name }} |"
+            echo "| commit | ${{ github.sha }} |"
+            echo "| Docker 补丁 | ${{ github.event.inputs.docker_patches == 'false' && '未应用' || '已应用' }} |"
+            echo '| KSU | 树内 SukiSU Ultra（跟随内核源码） |'
+            echo '| 工具链 | AOSP clang r563880c |'
+            echo "| 设备树 | lemonade / lemonadep / lemonades / lemonadev |"
+          } >> $GITHUB_STEP_SUMMARY
