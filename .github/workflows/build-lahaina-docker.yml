@@ -50,7 +50,7 @@ jobs:
           mkdir -p kernel
 
       - name: Checkout Kernel Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: kernel/msm-5.4
           fetch-depth: 1
@@ -73,7 +73,7 @@ jobs:
           test -f $KERNEL_DIR/KernelSU/kernel/Kconfig || { echo '错误: 树内 KernelSU 缺失'; exit 1; }
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.ccache
           key: ccache-feather-${{ github.ref_name }}-${{ github.sha }}
@@ -113,6 +113,24 @@ jobs:
           echo '  下载文件大小:'
           wc -c fs/overlayfs/util.c kernel/module.c include/linux/sched/user.h
 
+          # ---------------------------------------------------------------
+          # 修正 Docker 版 module.c 的老 API 漂移
+          # miaizhe 的 module.c 来自更老的内核，其中 __vmalloc 还是 3 参数
+          # (size, gfp, prot)。5.4 已去掉 prot 参数，必须改回 2 参数。
+          # 这是【非故意的漂移】，不是 Docker 补丁的一部分，改回不影响功能。
+          # ---------------------------------------------------------------
+          echo '=== 修正 Docker 补丁的 API 漂移 ==='
+          before=$(grep -c 'PAGE_KERNEL)' kernel/module.c || true)
+          perl -0777 -i -pe 's/__vmalloc\(([^;]*?),\s*(GFP_[A-Z_ |]+?)\s*,\s*PAGE_KERNEL\)/__vmalloc($1, $2)/gs' kernel/module.c
+          after=$(grep -c 'PAGE_KERNEL)' kernel/module.c || true)
+          echo "  含 PAGE_KERNEL) 的行: 修正前 $before -> 修正后 $after"
+          echo '  修正后的 __vmalloc 调用:'
+          grep -n -A2 '__vmalloc(' kernel/module.c | head -20
+          if grep -q '__vmalloc([^;]*PAGE_KERNEL' kernel/module.c; then
+            echo '  !! 仍有 3 参数 __vmalloc 残留'
+            exit 1
+          fi
+          echo '  ✓ module.c API 漂移已修正'
           echo '=== SYSVIPC ABI padding 补丁 ==='
           curl -fLSs --retry 5 \
             'https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch' \
