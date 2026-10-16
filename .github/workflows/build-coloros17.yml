@@ -1,0 +1,181 @@
+name: Build 5.4.254 OPLUS (lahaina) - ColorOS 17 port
+
+# Kernel for porting ColorOS 17 onto OnePlus 9 / 9 Pro with the stock
+# OxygenOS 14 vendor.
+#   - Source: OnePlus 5.4.254 (one899/Kernel_oneplus_8350_5.4.254bpf, 9p)
+#     carrying the 5.10 BPF backport and the netbpfload uname compat
+#   - Added here: close_range (syscall 436) and CAP_CHECKPOINT_RESTORE (40)
+#   - Docker / Droidspaces patches (overlayfs util.c, module.c, sched/user.h,
+#     SYSVIPC kabi) are already in-tree, so nothing is downloaded over them
+#   - Only the kernel Image is flashed; the stock dtb/dtbo match this source
+
+on:
+  push:
+    branches:
+      - 'coloros17'
+  workflow_dispatch:
+    inputs:
+      root:
+        description: 'Root solution'
+        type: choice
+        options:
+          - resukisu
+          - none
+        default: resukisu
+
+env:
+  KERNEL_DIR: kernel/msm-5.4
+  # Same clang the reference tree is built with (LTO + CFI known good)
+  CLANG_URL: https://github.com/Rancemxn/android_kernel_oppo_sm7325/releases/download/BuildTool/linux-x86-refs_heads_llvm-r383902b-clang-r383902.tar.gz
+  ROOT: ${{ inputs.root || 'resukisu' }}
+
+jobs:
+  build:
+    name: Compile 5.4.254 OPLUS (${{ inputs.root || 'resukisu' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - name: Configure Fast APT Mirror
+        uses: vegardit/fast-apt-mirror.sh@v1
+
+      - name: Make Build Environment
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential cpio curl dwarves flex git kmod libelf-dev \
+            libssl-dev lz4 python3 python-is-python3 rsync unzip zip
+          mkdir -p kernel
+
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v5
+        with:
+          path: kernel/msm-5.4
+          fetch-depth: 1
+
+      - name: Prepare Compiler
+        run: |
+          mkdir -p compiler/clang-bin
+          curl -fL "$CLANG_URL" -o clang.tar.gz --connect-timeout 30 --retry 5 --retry-delay 5
+          tar -xzf clang.tar.gz -C compiler/clang-bin
+          rm clang.tar.gz
+          compiler/clang-bin/bin/clang --version | head -1
+
+      - name: Verify ColorOS 17 kernel requirements
+        working-directory: kernel/msm-5.4
+        run: |
+          fail=0
+          check() { if eval "$2"; then echo "  OK:   $1"; else echo "  FAIL: $1"; fail=1; fi; }
+          check 'close_range syscall 436'       "grep -q '__NR_close_range 436' include/uapi/asm-generic/unistd.h"
+          check 'close_range compat (arm32)'    "grep -q '__NR_close_range 436' arch/arm64/include/asm/unistd32.h"
+          check 'CAP_CHECKPOINT_RESTORE (40)'   "grep -q 'define CAP_LAST_CAP *CAP_CHECKPOINT_RESTORE' include/uapi/linux/capability.h"
+          check 'SELinux cap2 checkpoint_restore' "grep -q '\"checkpoint_restore\"' security/selinux/include/classmap.h"
+          check 'BPF ringbuf'                   "grep -q 'ringbuf.o' kernel/bpf/Makefile"
+          check 'netbpfload uname compat'       "grep -q '\"netbpfload\"' kernel/sys.c"
+          check 'oplus_chg charger fix'         "grep -q 'oplus_chg/' drivers/power/Makefile"
+          exit $fail
+
+      - name: Set Release Info
+        run: echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+
+      - name: Compile Kernel
+        working-directory: kernel/msm-5.4
+        run: |
+          export PATH="$GITHUB_WORKSPACE/compiler/clang-bin/bin:$PATH"
+          export CROSS_COMPILE="aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export CLANG_TRIPLE="aarch64-linux-gnu-"
+          export ARCH="arm64"
+          export SUBARCH="arm64"
+
+          if [ "$ROOT" = "resukisu" ]; then
+            rm -rf KernelSU drivers/kernelsu
+            curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+          fi
+
+          make O=out CC="clang" LLVM=1 Reno10-Docker_defconfig
+
+          if [ "$ROOT" = "resukisu" ]; then
+            ./scripts/config --file out/.config \
+              -e CONFIG_KSU \
+              -d CONFIG_KSU_TRACEPOINT_HOOK \
+              -e CONFIG_KSU_MANUAL_HOOK
+          else
+            ./scripts/config --file out/.config -d CONFIG_KSU
+          fi
+
+          # Namespaces / cgroups ColorOS 17 and Droidspaces expect.
+          # Most are already on in the defconfig; set them explicitly so a
+          # defconfig change can't silently drop them.
+          ./scripts/config --file out/.config \
+            -e CONFIG_NAMESPACES \
+            -e CONFIG_USER_NS \
+            -e CONFIG_PID_NS \
+            -e CONFIG_IPC_NS \
+            -e CONFIG_NET_NS \
+            -e CONFIG_UTS_NS \
+            -e CONFIG_CHECKPOINT_RESTORE \
+            -e CONFIG_SYSVIPC \
+            -e CONFIG_POSIX_MQUEUE \
+            -e CONFIG_TMPFS_POSIX_ACL \
+            -e CONFIG_TMPFS_XATTR \
+            -e CONFIG_CGROUP_PIDS \
+            -e CONFIG_CGROUP_IO \
+            -e CONFIG_CPUSETS \
+            -e CONFIG_MEMCG \
+            -e CONFIG_DEVTMPFS \
+            -e CONFIG_DEVTMPFS_MOUNT \
+            -e CONFIG_OVERLAY_FS \
+            -e CONFIG_OVERLAY_FS_REDIRECT_DIR \
+            -e CONFIG_OVERLAY_FS_INDEX
+
+          # Version string must not contain a space: with CONFIG_MODVERSIONS,
+          # same_magic() skips up to the first space before comparing, and a
+          # space in UTS_RELEASE makes every stock vendor module mismatch.
+          sed -i 's/^EXTRAVERSION = .*/EXTRAVERSION =/' Makefile
+          SUFFIX="-qgki-coloros17-${BUILD_DATE}"
+          printf '#!/bin/sh\necho "%s"\n' "$SUFFIX" > scripts/setlocalversion
+          chmod +x scripts/setlocalversion
+          ./scripts/config --file out/.config --set-str LOCALVERSION ""
+          ./scripts/config --file out/.config -d LOCALVERSION_AUTO
+
+          make O=out CC="clang" LLVM=1 olddefconfig
+
+          echo '=== Key config ==='
+          grep -E '^CONFIG_(USER_NS|PID_NS|IPC_NS|NET_NS|UTS_NS|CHECKPOINT_RESTORE|SYSVIPC|BPF_SYSCALL|BPF_JIT|CGROUP_BPF|MODVERSIONS|KSU)=' out/.config | sort
+
+          make O=out CC="clang" LLVM=1 -j$(nproc)
+
+          echo "=== Kernel release: $(cat out/include/config/kernel.release) ==="
+          ls -la out/arch/arm64/boot/Image
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          rm -rf AnyKernel3/.git
+          cp $KERNEL_DIR/out/arch/arm64/boot/Image AnyKernel3/Image
+          cp $KERNEL_DIR/anykernel/anykernel.sh AnyKernel3/anykernel.sh
+          ZIP="$GITHUB_WORKSPACE/OPLUS-5.4.254-ColorOS17-lahaina-$ROOT-$BUILD_DATE.zip"
+          ( cd AnyKernel3 && zip -r9 "$ZIP" . -x ".git*" "README.md" "*placeholder" >/dev/null )
+          unzip -l "$ZIP"
+
+      - name: Collect Image and in-tree modules
+        run: |
+          cp $KERNEL_DIR/out/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image-5.4.254-ColorOS17-$BUILD_DATE"
+          # Not flashed: the stock vendor modules are kept. Provided for the
+          # port script in case a module has to be replaced.
+          mkdir -p modules
+          find $KERNEL_DIR/out -name '*.ko' -exec cp {} modules/ \;
+          tar -czf "$GITHUB_WORKSPACE/modules-5.4.254-ColorOS17-$BUILD_DATE.tar.gz" -C modules .
+          ls -la $GITHUB_WORKSPACE/*.zip $GITHUB_WORKSPACE/Image-* $GITHUB_WORKSPACE/modules-*
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: OPLUS-5.4.254-ColorOS17-lahaina-${{ env.ROOT }}
+          path: |
+            OPLUS-5.4.254-ColorOS17-lahaina-*.zip
+            Image-5.4.254-ColorOS17-*
+            modules-5.4.254-ColorOS17-*.tar.gz
+          if-no-files-found: error
