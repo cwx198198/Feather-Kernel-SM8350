@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2017-2018 HUAWEI, Inc.
  *             https://www.huawei.com/
+ * Created by Gao Xiang <gaoxiang25@huawei.com>
  */
 #include "internal.h"
 #include <linux/prefetch.h>
@@ -20,6 +21,15 @@ static void erofs_readendio(struct bio *bio)
 		/* page is already locked */
 		DBG_BUGON(PageUptodate(page));
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (PageCont(page)) {
+			if (err)
+				SetPageError(page);
+
+			set_cont_pte_uptodate_and_unlock(page);
+			continue;
+		}
+#endif
 		if (err)
 			SetPageError(page);
 		else
@@ -150,7 +160,12 @@ submit_bio_retry:
 		/* zero out the holed page */
 		if (!(map.m_flags & EROFS_MAP_MAPPED)) {
 			zero_user_segment(page, 0, PAGE_SIZE);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+			if (!PageCont(page))
+				SetPageUptodate(page);
+#else
 			SetPageUptodate(page);
+#endif
 
 			/* imply err = 0, see erofs_map_blocks */
 			goto has_updated;
@@ -208,14 +223,13 @@ submit_bio_retry:
 		bio_set_dev(bio, sb->s_bdev);
 		bio->bi_iter.bi_sector = (sector_t)blknr <<
 			LOG_SECTORS_PER_BLOCK;
-		bio->bi_opf = REQ_OP_READ;
+		bio->bi_opf = REQ_OP_READ | (ra ? REQ_RAHEAD : 0);
 	}
 
 	err = bio_add_page(bio, page, PAGE_SIZE, 0);
 	/* out of the extent or bio is full */
 	if (err < PAGE_SIZE)
 		goto submit_bio_retry;
-
 	*last_block = current_block;
 
 	/* shift in advance in case of it followed by too many gaps */
@@ -234,7 +248,14 @@ err_out:
 		ClearPageUptodate(page);
 	}
 has_updated:
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (!PageCont(page))
+			unlock_page(page);
+		else
+			set_cont_pte_uptodate_and_unlock(page);
+#else
 	unlock_page(page);
+#endif
 
 	/* if updated manually, continuous pages has a gap */
 	if (bio)
@@ -253,6 +274,15 @@ static int erofs_raw_access_readpage(struct file *file, struct page *page)
 	struct bio *bio;
 
 	trace_erofs_readpage(page, true);
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		/* FIXME: Probe the page twice readpage! */
+		if (PageCont(page))
+			CHP_BUG_ON(TestSetPageContIODoing(page));
+
+		/* FIXME: Detected the endio bug twice! */
+		CHP_BUG_ON(ContPteHugePage(page) || PageContUptodate(page));
+#endif
 
 	bio = erofs_read_raw_page(NULL, page->mapping,
 				  page, &last_block, 1, false);
@@ -282,7 +312,24 @@ static int erofs_raw_access_readpages(struct file *filp,
 		prefetchw(&page->flags);
 		list_del(&page->lru);
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		/*
+		 * The PageCont page has added page_cache_lru to the
+		 * cont_add_to_page_cache_locked function.
+		 */
+		if (PageCont(page) ||
+		    !add_to_page_cache_lru(page, mapping, page->index, gfp)) {
+#else
 		if (!add_to_page_cache_lru(page, mapping, page->index, gfp)) {
+#endif
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		/* FIXME: Probe the page twice readpage! */
+		if (PageCont(page))
+			CHP_BUG_ON(TestSetPageContIODoing(page));
+
+		/* FIXME: Detected the endio bug twice! */
+		CHP_BUG_ON(ContPteHugePage(page) || PageContUptodate(page));
+#endif
 			bio = erofs_read_raw_page(bio, mapping, page,
 						  &last_block, nr_pages, true);
 
@@ -333,3 +380,4 @@ const struct address_space_operations erofs_raw_access_aops = {
 	.readpages = erofs_raw_access_readpages,
 	.bmap = erofs_bmap,
 };
+

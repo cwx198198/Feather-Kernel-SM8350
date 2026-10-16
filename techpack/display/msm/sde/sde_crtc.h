@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021 The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -400,6 +400,7 @@ struct sde_crtc {
 enum sde_crtc_dirty_flags {
 	SDE_CRTC_DIRTY_DEST_SCALER,
 	SDE_CRTC_DIRTY_DIM_LAYERS,
+	SDE_CRTC_DIRTY_UIDLE,
 	SDE_CRTC_DIRTY_MAX,
 };
 
@@ -526,8 +527,7 @@ static inline int sde_crtc_get_mixer_width(struct sde_crtc *sde_crtc,
 	if (cstate->num_ds_enabled)
 		mixer_width = cstate->ds_cfg[0].lm_width;
 	else
-		mixer_width = sde_crtc->num_mixers ?
-			mode->hdisplay / sde_crtc->num_mixers : mode->hdisplay;
+		mixer_width = mode->hdisplay / sde_crtc->num_mixers;
 
 	return mixer_width;
 }
@@ -634,7 +634,7 @@ void sde_crtc_prepare_commit(struct drm_crtc *crtc,
  * @old_state: Pointer to drm crtc old state object
  */
 void sde_crtc_complete_commit(struct drm_crtc *crtc,
-		struct drm_crtc_state *old_state);
+	struct drm_crtc_state *old_state, bool update_perf);
 
 /**
  * sde_crtc_init - create a new crtc object
@@ -977,11 +977,5 @@ void sde_crtc_reset_sw_state(struct drm_crtc *crtc);
  * @cstate:      Pointer to drm crtc state
  */
 void _sde_crtc_clear_dim_layers_v1(struct drm_crtc_state *state);
-
-/**
- * sde_crtc_cancel_delayed_work - cancel any pending work items for a given crtc
- * @crtc: Pointer to DRM crtc object
- */
-void sde_crtc_cancel_delayed_work(struct drm_crtc *crtc);
 
 #endif /* _SDE_CRTC_H_ */

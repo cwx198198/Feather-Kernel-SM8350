@@ -42,7 +42,7 @@ obj-y			:= filemap.o mempool.o oom_kill.o fadvise.o \
 			   mm_init.o mmu_context.o percpu.o slab_common.o \
 			   compaction.o vmacache.o \
 			   interval_tree.o list_lru.o workingset.o \
-			   debug.o gup.o pgsize_migration.o $(mmu-y) showmem.o
+			   debug.o gup.o $(mmu-y) showmem.o
 
 # Give 'page_alloc' its own module-parameter namespace
 page-alloc-y := page_alloc.o
@@ -71,7 +71,6 @@ obj-$(CONFIG_PAGE_POISONING) += page_poison.o
 obj-$(CONFIG_SLAB) += slab.o
 obj-$(CONFIG_SLUB) += slub.o
 obj-$(CONFIG_KASAN)	+= kasan/
-obj-$(CONFIG_KFENCE) += kfence/
 obj-$(CONFIG_FAILSLAB) += failslab.o
 obj-$(CONFIG_MEMORY_HOTPLUG) += memory_hotplug.o
 obj-$(CONFIG_MEMTEST)		+= memtest.o
@@ -92,7 +91,9 @@ obj-$(CONFIG_CLEANCACHE) += cleancache.o
 obj-$(CONFIG_MEMORY_ISOLATION) += page_isolation.o
 obj-$(CONFIG_ZPOOL)	+= zpool.o
 obj-$(CONFIG_ZBUD)	+= zbud.o
-obj-$(CONFIG_ZSMALLOC)	+= zsmalloc.o
+obj-$(CONFIG_ZSMALLOC) += oplus_bsp_zsmalloc.o
+oplus_bsp_zsmalloc-y   := zsmalloc.o
+oplus_bsp_zsmalloc-$(CONFIG_CONT_PTE_HUGEPAGE_64K_ZRAM) += thp_zsmalloc.o
 obj-$(CONFIG_Z3FOLD)	+= z3fold.o
 obj-$(CONFIG_GENERIC_EARLY_IOREMAP) += early_ioremap.o
 obj-$(CONFIG_CMA)	+= cma.o
@@ -108,3 +109,27 @@ obj-$(CONFIG_PERCPU_STATS) += percpu-stats.o
 obj-$(CONFIG_ZONE_DEVICE) += memremap.o
 obj-$(CONFIG_HMM_MIRROR) += hmm.o
 obj-$(CONFIG_MEMFD_CREATE) += memfd.o
+obj-$(CONFIG_OPLUS_FEATURE_ZRAM_OPT) += zram_opt/
+obj-$(CONFIG_PROCESS_RECLAIM_ENHANCE) += process_reclaim/
+obj-$(CONFIG_DAMON) += damon/
+obj-$(CONFIG_VIRTUAL_RESERVE_MEMORY) += reserve_area.o
+#ifdef OPLUS_FEATURE_HEALTHINFO
+obj-$(CONFIG_OPLUS_HEALTHINFO) += healthinfo/
+#endif /* OPLUS_FEATURE_HEALTHINFO */
+obj-$(CONFIG_DUMP_TASKS_MEM) += task_mem/
+#if defined(OPLUS_FEATURE_MULTI_FREEAREA)
+obj-$(CONFIG_PHYSICAL_ANTI_FRAGMENTATION) += multi_freearea.o
+#endif
+
+#ifdef OPLUS_FEATURE_PROACTIVE_COMPACT
+obj-$(CONFIG_PROACTIVE_COMPACT) += proactive_compact/
+#endif /* OPLUS_FEATURE_PROACTIVE_COMPACT */
+
+obj-y += mm_osvelte/
+obj-$(CONFIG_KSHRINK_LRUVECD) += kshrink_lruvecd.o
+obj-$(CONFIG_KSHRINK_SLABD) += kshrink_slabd.o
+obj-$(CONFIG_MAPPED_PROTECT) += mapped_protect.o
+obj-$(CONFIG_OPLUS_SENSITIVE_MEM_ALLOC_OPT) += oplus_sensitive_mem_alloc.o
+obj-$(CONFIG_OPLUS_UXMEM_OPT) += ux_page_pool.o
+obj-$(CONFIG_OPLUS_DYNAMIC_READAHEAD) += dynamic_readhead.o
+obj-$(CONFIG_CONT_PTE_HUGEPAGE) += cont_pte_hugepage.o

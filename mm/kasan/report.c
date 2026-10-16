@@ -29,7 +29,6 @@
 #include <linux/kasan.h>
 #include <linux/module.h>
 #include <linux/sched/task_stack.h>
-#include <trace/events/error_report.h>
 
 #include <asm/sections.h>
 
@@ -88,14 +87,18 @@ static void start_report(unsigned long *flags)
 	pr_err("==================================================================\n");
 }
 
-static void end_report(unsigned long *flags, unsigned long addr)
+static void end_report(unsigned long *flags)
 {
-	trace_error_report_end(ERROR_DETECTOR_KASAN, addr);
 	pr_err("==================================================================\n");
 	add_taint(TAINT_BAD_PAGE, LOCKDEP_NOW_UNRELIABLE);
 	spin_unlock_irqrestore(&report_lock, *flags);
+#ifdef CONFIG_QGKI
+	//BSP.Kernel.Stability, kasan load enforce BUG
+	panic("panic_on_warn set ...\n");
+#else	
 	if (!test_bit(KASAN_BIT_MULTI_SHOT, &kasan_flags))
 		check_panic_on_warn("KASAN");
+#endif
 	kasan_enable_current();
 }
 
@@ -470,7 +473,7 @@ void kasan_report_invalid_free(void *object, unsigned long ip)
 	print_address_description(object, tag);
 	pr_err("\n");
 	print_shadow_for_address(object);
-	end_report(&flags, (unsigned long)object);
+	end_report(&flags);
 }
 
 void __kasan_report(unsigned long addr, size_t size, bool is_write, unsigned long ip)
@@ -512,5 +515,5 @@ void __kasan_report(unsigned long addr, size_t size, bool is_write, unsigned lon
 		dump_stack();
 	}
 
-	end_report(&flags, addr);
+	end_report(&flags);
 }

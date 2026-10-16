@@ -12,7 +12,6 @@
 #include <linux/memory.h>
 #include <linux/cache.h>
 #include <linux/compiler.h>
-#include <linux/kfence.h>
 #include <linux/module.h>
 #include <linux/cpu.h>
 #include <linux/uaccess.h>
@@ -594,7 +593,6 @@ static void slab_caches_to_rcu_destroy_workfn(struct work_struct *work)
 	rcu_barrier();
 
 	list_for_each_entry_safe(s, s2, &to_destroy, list) {
-		kfence_shutdown_cache(s);
 #ifdef SLAB_SUPPORTS_SYSFS
 		sysfs_slab_release(s);
 #else
@@ -621,7 +619,6 @@ static int shutdown_cache(struct kmem_cache *s)
 		list_add_tail(&s->list, &slab_caches_to_rcu_destroy);
 		schedule_work(&slab_caches_to_rcu_destroy_work);
 	} else {
-		kfence_shutdown_cache(s);
 #ifdef SLAB_SUPPORTS_SYSFS
 		sysfs_slab_unlink(s);
 		sysfs_slab_release(s);
@@ -1178,6 +1175,16 @@ struct kmem_cache *kmalloc_slab(size_t size, gfp_t flags)
 		index = fls(size - 1);
 	}
 
+#if defined(OPLUS_FEATURE_MEMLEAK_DETECT) && defined(CONFIG_KMALLOC_DEBUG)
+	/* try to kmalloc from kmalloc_debug caches fisrt */
+	if (unlikely(kmalloc_debug_enable)) {
+		struct kmem_cache *s;
+
+		s = (struct kmem_cache *)atomic64_read(&kmalloc_debug_caches[kmalloc_type(flags)][index]);
+		if (unlikely(s))
+			return s;
+	}
+#endif
 	return kmalloc_caches[kmalloc_type(flags)][index];
 }
 
@@ -1278,10 +1285,17 @@ new_kmalloc_cache(int idx, int type, slab_flags_t flags)
 	} else {
 		name = kmalloc_info[idx].name;
 	}
+	
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_SLABTRACE_DEBUG) && defined(CONFIG_SLABTRACE_DEBUG)
+	kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
+					kmalloc_info[idx].size, flags|SLAB_STORE_USER, 0,
+					kmalloc_info[idx].size);
 
+#else
 	kmalloc_caches[type][idx] = create_kmalloc_cache(name,
 					kmalloc_info[idx].size, flags, 0,
 					kmalloc_info[idx].size);
+#endif
 }
 
 /*
@@ -1438,6 +1452,10 @@ static void print_slabinfo_header(struct seq_file *m)
 	seq_puts(m, " : globalstat <listallocs> <maxobjs> <grown> <reaped> <error> <maxfreeable> <nodeallocs> <remotefrees> <alienoverflow>");
 	seq_puts(m, " : cpustat <allochit> <allocmiss> <freehit> <freemiss>");
 #endif
+#if defined OPLUS_FEATURE_HEALTHINFO && defined CONFIG_OPLUS_HEALTHINFO
+	seq_puts(m, " <reclaim>");
+
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 	seq_putc(m, '\n');
 }
 
@@ -1493,8 +1511,14 @@ static void cache_show(struct kmem_cache *s, struct seq_file *m)
 
 	seq_printf(m, " : tunables %4u %4u %4u",
 		   sinfo.limit, sinfo.batchcount, sinfo.shared);
+#if (!defined OPLUS_FEATURE_HEALTHINFO) || (!defined CONFIG_OPLUS_HEALTHINFO)
 	seq_printf(m, " : slabdata %6lu %6lu %6lu",
 		   sinfo.active_slabs, sinfo.num_slabs, sinfo.shared_avail);
+#else /* OPLUS_FEATURE_HEALTHINFO */
+	seq_printf(m, " : slabdata %6lu %6lu %6lu %1d",
+			   sinfo.active_slabs, sinfo.num_slabs, sinfo.shared_avail,
+			   ((s->flags & SLAB_RECLAIM_ACCOUNT) == SLAB_RECLAIM_ACCOUNT) ? 1: 0);
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 	slabinfo_show_stats(m, s);
 	seq_putc(m, '\n');
 }
@@ -1743,13 +1767,6 @@ static __always_inline void *__do_krealloc(const void *p, size_t new_size,
 		ks = ksize(p);
 
 	if (ks >= new_size) {
-		/* Zero out spare memory. */
-		if (want_init_on_alloc(flags)) {
-			kasan_disable_current();
-			memset(kasan_reset_tag(p) + new_size, 0, ks - new_size);
-			kasan_enable_current();
-		}
-
 		p = kasan_krealloc((void *)p, new_size, flags);
 		return (void *)p;
 	}
@@ -1873,7 +1890,7 @@ size_t ksize(const void *objp)
 	if (unlikely(objp == ZERO_SIZE_PTR) || !__kasan_check_read(objp, 1))
 		return 0;
 
-	size = kfence_ksize(objp) ?: __ksize(objp);
+	size = __ksize(objp);
 	/*
 	 * We assume that ksize callers could use whole allocated area,
 	 * so we need to unpoison this area.

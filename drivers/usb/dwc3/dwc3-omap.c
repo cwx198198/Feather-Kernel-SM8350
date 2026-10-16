@@ -527,13 +527,11 @@ static int dwc3_omap_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(dev, "failed to request IRQ #%d --> %d\n",
 			omap->irq, ret);
-		goto err2;
+		goto err1;
 	}
 	dwc3_omap_enable_irqs(omap);
 	return 0;
 
-err2:
-	of_platform_depopulate(dev);
 err1:
 	pm_runtime_put_sync(dev);
 	pm_runtime_disable(dev);
@@ -629,6 +627,6 @@ static struct platform_driver dwc3_omap_driver = {
 module_platform_driver(dwc3_omap_driver);
 
 MODULE_ALIAS("platform:omap-dwc3");
-MODULE_AUTHOR("Felipe Balbi <balbi@ti.com>");
+MODULE_AUTHOR("Felipe Balbi");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("DesignWare USB3 OMAP Glue Layer");

@@ -41,7 +41,6 @@
 #include "socket.h"
 #include "node.h"
 #include "bcast.h"
-#include "link.h"
 #include "netlink.h"
 #include "monitor.h"
 
@@ -139,11 +138,19 @@ static void tipc_net_finalize(struct net *net, u32 addr)
 
 void tipc_net_finalize_work(struct work_struct *work)
 {
-	struct tipc_net *tn = container_of(work, struct tipc_net, work);
+	struct tipc_net_work *fwork;
 
-	rtnl_lock();
-	tipc_net_finalize(tipc_link_net(tn->bcl), tn->trial_addr);
-	rtnl_unlock();
+	fwork = container_of(work, struct tipc_net_work, work);
+	tipc_net_finalize(fwork->net, fwork->addr);
+}
+
+void tipc_sched_net_finalize(struct net *net, u32 addr)
+{
+	struct tipc_net *tn = tipc_net(net);
+
+	tn->final_work.net = net;
+	tn->final_work.addr = addr;
+	schedule_work(&tn->final_work.work);
 }
 
 void tipc_net_stop(struct net *net)

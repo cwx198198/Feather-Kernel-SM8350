@@ -1,6 +1,6 @@
 /* drivers/misc/cs_press/cs_press_f61.h*/
 /************************************************************
- * Copyright 2018 OPLUS Mobile Comm Corp., Ltd.
+ * Copyright 2018 OPPO Mobile Comm Corp., Ltd.
  * All rights reserved.
  *
  * Description  : driver for chip sea IC
@@ -11,7 +11,7 @@
 #ifndef _CS_PRESS_H
 #define _CS_PRESS_H
 
-//#include <soc/oplus/device_info.h>
+//#include <soc/oppo/device_info.h>
 
 #define I2C_CHECK_SCHEDULE
 /*IIC REG*/

@@ -32,9 +32,6 @@
 #include <linux/ima.h>
 #include <linux/dnotify.h>
 #include <linux/compat.h>
-#ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs_def.h>
-#endif
 
 #include "internal.h"
 
@@ -203,13 +200,13 @@ out:
 	return error;
 }
 
-SYSCALL_DEFINE2(ftruncate, unsigned int, fd, off_t, length)
+SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)
 {
 	return do_sys_ftruncate(fd, length, 1);
 }
 
 #ifdef CONFIG_COMPAT
-COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_off_t, length)
+COMPAT_SYSCALL_DEFINE2(ftruncate, unsigned int, fd, compat_ulong_t, length)
 {
 	return do_sys_ftruncate(fd, length, 1);
 }
@@ -348,12 +345,6 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
  * We do this by temporarily clearing all FS-related capabilities and
  * switching the fsuid/fsgid around to the real ones.
  */
-#ifdef CONFIG_KSU_SUSFS
-extern struct static_key_true ksu_su_compat_enabled;
-extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-extern int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode,
-			int *flags);
-#endif
 long do_faccessat(int dfd, const char __user *filename, int mode)
 {
 	const struct cred *old_cred;
@@ -362,10 +353,6 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
 	struct inode *inode;
 	int res;
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
-
-#ifdef CONFIG_KSU_SUSFS
-	struct filename *fname = NULL;
-#endif
 
 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
 		return -EINVAL;
@@ -408,23 +395,7 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
 
 	old_cred = override_creds(override_cred);
 retry:
-#ifdef CONFIG_KSU_SUSFS
-	fname = getname_flags(filename, lookup_flags, NULL);
-
-	if (likely(susfs_is_current_proc_no_su()))
-		goto orig_flow;
-
-	if (static_branch_likely(&ksu_su_compat_enabled)) {
-		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
-			ksu_handle_faccessat(&dfd, &fname, &mode, NULL);
-	}
-
-orig_flow:
-	res = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
-	// no putname(fname) here as filename_lookup() has it done for us already;
-#else
 	res = user_path_at(dfd, filename, lookup_flags, &path);
-#endif
 	if (res)
 		goto out;
 
@@ -469,8 +440,17 @@ out:
 	return res;
 }
 
+#ifdef CONFIG_KSU
+__attribute__((hot))
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
+				int *mode, int *flags);
+#endif
+
 SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 {
+#ifdef CONFIG_KSU
+	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+#endif
 	return do_faccessat(dfd, filename, mode);
 }
 
@@ -599,19 +579,14 @@ out_unlock:
 	return error;
 }
 
-int vfs_fchmod(struct file *file, umode_t mode)
-{
-	audit_file(file);
-	return chmod_common(&file->f_path, mode);
-}
-
 int ksys_fchmod(unsigned int fd, umode_t mode)
 {
 	struct fd f = fdget(fd);
 	int err = -EBADF;
 
 	if (f.file) {
-		err = vfs_fchmod(f.file, mode);
+		audit_file(f.file);
+		err = chmod_common(&f.file->f_path, mode);
 		fdput(f);
 	}
 	return err;
@@ -742,28 +717,23 @@ SYSCALL_DEFINE3(lchown, const char __user *, filename, uid_t, user, gid_t, group
 			   AT_SYMLINK_NOFOLLOW);
 }
 
-int vfs_fchown(struct file *file, uid_t user, gid_t group)
-{
-	int error;
-
-	error = mnt_want_write_file(file);
-	if (error)
-		return error;
-	audit_file(file);
-	error = chown_common(&file->f_path, user, group);
-	mnt_drop_write_file(file);
-	return error;
-}
-
 int ksys_fchown(unsigned int fd, uid_t user, gid_t group)
 {
 	struct fd f = fdget(fd);
 	int error = -EBADF;
 
-	if (f.file) {
-		error = vfs_fchown(f.file, user, group);
-		fdput(f);
-	}
+	if (!f.file)
+		goto out;
+
+	error = mnt_want_write_file(f.file);
+	if (error)
+		goto out_fput;
+	audit_file(f.file);
+	error = chown_common(&f.file->f_path, user, group);
+	mnt_drop_write_file(f.file);
+out_fput:
+	fdput(f);
+out:
 	return error;
 }
 
@@ -771,6 +741,18 @@ SYSCALL_DEFINE3(fchown, unsigned int, fd, uid_t, user, gid_t, group)
 {
 	return ksys_fchown(fd, user, group);
 }
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+extern bool shmem_mapping(struct address_space *mapping);
+static inline bool shmem_file_dup(struct file *file)
+{
+	if (!IS_ENABLED(CONFIG_SHMEM))
+		return false;
+	if (!file || !file->f_mapping)
+		return false;
+	return shmem_mapping(file->f_mapping);
+}
+#endif
 
 static int do_dentry_open(struct file *f,
 			  struct inode *inode,
@@ -862,9 +844,73 @@ static int do_dentry_open(struct file *f,
 	 * XXX: Huge page cache doesn't support writing yet. Drop all page
 	 * cache for this file before processing writes.
 	 */
-	if ((f->f_mode & FMODE_WRITE) && filemap_nr_thps(inode->i_mapping))
-		truncate_pagecache(inode, 0);
+	if (f->f_mode & FMODE_WRITE) {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		CHP_BUG_ON(inode->i_sb->s_magic == EROFS_SUPER_MAGIC_V1 && inode->may_cont_pte);
+#endif
+		if (filemap_nr_thps(inode->i_mapping))
+			truncate_pagecache(inode, 0);
+	} else {
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		bool fs_supported = false;
 
+#if CONFIG_CONT_PTE_FILE_HUGEPAGE_DISABLE
+		return 0;
+#endif
+		fs_supported = handle_chp_fs_supported(inode);
+
+		if (!fs_supported)
+			return 0;
+
+		if (!S_ISREG(inode->i_mode))
+			return 0;
+		if (shmem_file_dup(f))
+			return 0;
+		if (inode->i_size < HPAGE_CONT_PTE_SIZE)
+			return 0;
+
+		inode_lock(inode);
+		if (!inode->may_cont_pte) {
+			int hugepage = 0;
+			const char *suffix;
+
+			/* executable files can be hugepages */
+			if (execute_ok(inode)) {
+				hugepage = NORMAL_HUGE;
+				goto done;
+			}
+
+			if (!f->f_path.dentry)
+				goto done;
+			suffix = strrchr(f->f_path.dentry->d_name.name, '.');
+			if (!suffix)
+				goto done;
+
+			if (!strcmp(suffix, ".so") || !strcmp(suffix, ".odex") ||
+				!strcmp(suffix, ".ttf") || !strcmp(suffix, ".ttc") ||
+				!strcmp(suffix, ".otf") ||
+				!strcmp(f->f_path.dentry->d_name.name, "OplusLauncher.apk") ||
+			    !strcmp(f->f_path.dentry->d_name.name, "OplusExSystemService.apk") ||
+			    !strcmp(f->f_path.dentry->d_name.name, "SystemUI.apk") ||
+			    !strcmp(f->f_path.dentry->d_name.name, "framework-res.apk") ||
+			    !strcmp(f->f_path.dentry->d_name.name, "oplus-framework-res.apk") ||
+			    !strcmp(f->f_path.dentry->d_name.name, "OplusAppPlatform.apk") ||
+				(supported_oat_hugepage && !strcmp(f->f_path.dentry->d_name.name, "boot-framework.oat"))) {
+				hugepage = NORMAL_HUGE;
+				goto done;
+			}
+			if (!strcmp(suffix, ".jar"))
+				hugepage = JAR_HUGE;
+done:
+			if (hugepage) {
+				init_cont_endio_spinlock(inode);
+				smp_wmb();
+				inode->may_cont_pte = hugepage;
+			}
+		}
+		inode_unlock(inode);
+#endif
+	}
 	return 0;
 
 cleanup_all:
@@ -915,20 +961,18 @@ EXPORT_SYMBOL(finish_open);
  * finish_no_open - finish ->atomic_open() without opening the file
  *
  * @file: file pointer
- * @dentry: dentry, ERR_PTR(-E...) or NULL (as returned from ->lookup())
+ * @dentry: dentry or NULL (as returned from ->lookup())
  *
- * This can be used to set the result of a lookup in ->atomic_open().
+ * This can be used to set the result of a successful lookup in ->atomic_open().
  *
  * NB: unlike finish_open() this function does consume the dentry reference and
  * the caller need not dput() it.
  *
- * Returns 0 or -E..., which must be the return value of ->atomic_open() after
- * having called this function.
+ * Returns "0" which must be the return value of ->atomic_open() after having
+ * called this function.
  */
 int finish_no_open(struct file *file, struct dentry *dentry)
 {
-	if (IS_ERR(dentry))
-		return PTR_ERR(dentry);
 	file->f_path.dentry = dentry;
 	return 0;
 }

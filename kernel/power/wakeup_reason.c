@@ -108,7 +108,7 @@ static void delete_list(struct list_head *head)
 
 static bool add_sibling_node_sorted(struct list_head *head, int irq)
 {
-	struct wakeup_irq_node *n = NULL;
+	struct wakeup_irq_node *n;
 	struct list_head *predecessor = head;
 
 	if (unlikely(WARN_ON(!head)))
@@ -213,8 +213,7 @@ void log_threaded_irq_wakeup_reason(int irq, int parent_irq)
 }
 EXPORT_SYMBOL_GPL(log_threaded_irq_wakeup_reason);
 
-static void __log_abort_or_abnormal_wake(bool abort, const char *fmt,
-					 va_list args)
+void __log_abort_or_abnormal_wake(bool abort, const char *fmt, va_list args)
 {
 	unsigned long flags;
 
@@ -312,12 +311,20 @@ static ssize_t last_resume_reason_show(struct kobject *kobj,
 		spin_unlock_irqrestore(&wakeup_reason_lock, flags);
 		return buf_offset;
 	}
-
+	#if IS_ENABLED(CONFIG_OPLUS_FEATURE_NWPOWER)
+	if (wakeup_reason == RESUME_IRQ && !list_empty(&leaf_irqs)) {
+		list_for_each_entry(n, &leaf_irqs, siblings)
+			buf_offset += scnprintf(buf + buf_offset,
+						PAGE_SIZE - buf_offset,
+						"%d %s\n", n->irq, (strncmp(n->irq_name, "ipcc_0", strlen("ipcc_0")) == 0) ? "qmi" : n->irq_name);
+	}
+	#else
 	if (wakeup_reason == RESUME_IRQ && !list_empty(&leaf_irqs))
 		list_for_each_entry(n, &leaf_irqs, siblings)
 			buf_offset += scnprintf(buf + buf_offset,
 						PAGE_SIZE - buf_offset,
 						"%d %s\n", n->irq, n->irq_name);
+	#endif
 	else if (wakeup_reason == RESUME_ABNORMAL)
 		buf_offset = scnprintf(buf, PAGE_SIZE, "-1 %s",
 				       non_irq_wake_reason);
@@ -352,10 +359,8 @@ static ssize_t last_suspend_time_show(struct kobject *kobj,
 
 	/* Export suspend_resume_time and sleep_time in pair here. */
 	return sprintf(buf, "%llu.%09lu %llu.%09lu\n",
-		       (unsigned long long)suspend_resume_time.tv_sec,
-		       suspend_resume_time.tv_nsec,
-		       (unsigned long long)sleep_time.tv_sec,
-		       sleep_time.tv_nsec);
+		       suspend_resume_time.tv_sec, suspend_resume_time.tv_nsec,
+		       sleep_time.tv_sec, sleep_time.tv_nsec);
 }
 
 static struct kobj_attribute resume_reason = __ATTR_RO(last_resume_reason);
@@ -399,7 +404,7 @@ static struct notifier_block wakeup_reason_pm_notifier_block = {
 	.notifier_call = wakeup_reason_pm_event,
 };
 
-static int __init wakeup_reason_init(void)
+int __init wakeup_reason_init(void)
 {
 	if (register_pm_notifier(&wakeup_reason_pm_notifier_block)) {
 		pr_warn("[%s] failed to register PM notifier\n", __func__);

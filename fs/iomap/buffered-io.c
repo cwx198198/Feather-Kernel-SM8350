@@ -23,7 +23,6 @@ static struct iomap_page *
 iomap_page_create(struct inode *inode, struct page *page)
 {
 	struct iomap_page *iop = to_iomap_page(page);
-	unsigned int nr_blocks = PAGE_SIZE / i_blocksize(inode);
 
 	if (iop || i_blocksize(inode) == PAGE_SIZE)
 		return iop;
@@ -33,8 +32,6 @@ iomap_page_create(struct inode *inode, struct page *page)
 	atomic_set(&iop->write_count, 0);
 	spin_lock_init(&iop->uptodate_lock);
 	bitmap_zero(iop->uptodate, PAGE_SIZE / SECTOR_SIZE);
-	if (PageUptodate(page))
-		bitmap_fill(iop->uptodate, nr_blocks);
 
 	/*
 	 * migrate_page_move_mapping() assumes that pages with private data have
@@ -169,6 +166,22 @@ iomap_read_page_end_io(struct bio_vec *bvec, int error)
 {
 	struct page *page = bvec->bv_page;
 	struct iomap_page *iop = to_iomap_page(page);
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (PageCont(page)) {
+		/*NOTE: This scenario does not support PageCont!*/
+		CHP_BUG_ON(page_has_private(page));
+		if (unlikely(error)) {
+			ClearPageUptodate(page);
+			SetPageError(page);
+		}
+
+		if (!iop || atomic_sub_and_test(bvec->bv_len,
+			&iop->read_count))
+			set_cont_pte_uptodate_and_unlock(page);
+		return;
+	}
+#endif
 
 	if (unlikely(error)) {
 		ClearPageUptodate(page);

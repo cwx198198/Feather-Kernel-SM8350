@@ -56,7 +56,10 @@ int rds_tcp_keepalive(struct socket *sock)
 	if (ret < 0)
 		goto bail;
 
-	tcp_sock_set_keepidle(sock->sk, keepidle);
+	ret = kernel_setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE,
+				(char *)&keepidle, sizeof(keepidle));
+	if (ret < 0)
+		goto bail;
 
 	/* KEEPINTVL is the interval between successive probes. We follow
 	 * the model in xs_tcp_finish_connecting() and re-use keepidle.
@@ -329,7 +332,7 @@ struct socket *rds_tcp_listen_init(struct net *net, bool isv6)
 		addr_len = sizeof(*sin);
 	}
 
-	ret = kernel_bind(sock, (struct sockaddr *)&ss, addr_len);
+	ret = sock->ops->bind(sock, (struct sockaddr *)&ss, addr_len);
 	if (ret < 0) {
 		rdsdebug("could not bind %s listener socket: %d\n",
 			 isv6 ? "IPv6" : "IPv4", ret);

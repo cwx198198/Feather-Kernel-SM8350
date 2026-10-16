@@ -558,13 +558,10 @@ retry:
 			goto retry;
 		}
 
-		ret = dma_fence_wait_timeout(fence, intr, timeout);
+		ret = dma_fence_wait_timeout(fence, intr, ret);
 		dma_fence_put(fence);
 		if (ret > 0 && wait_all && (i + 1 < shared_count))
 			goto retry;
-		/* Even for zero timeout the return value is 1 */
-		if (ret > 0 && timeout == 0)
-			ret = 1;
 	}
 	return ret;
 

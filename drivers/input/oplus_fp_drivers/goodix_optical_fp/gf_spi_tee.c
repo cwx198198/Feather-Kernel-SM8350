@@ -1,7 +1,7 @@
 /************************************************************************************
 ** File: - fingerprints_hal\drivers\goodix_fp\gf_spi_tee.c
 ** OPLUS_FEATURE_FINGERPRINT
-** Copyright (C), 2008-2016, OPLUS Mobile Comm Corp., Ltd
+** Copyright (C), 2008-2016, OPPO Mobile Comm Corp., Ltd
 **
 ** Description:
 **      fpc fingerprint kernel device driver
@@ -85,7 +85,7 @@
 #define SENDCMD_WAKELOCK_HOLD_TIME 1000 /* in ms */
 
 #define GF_SPIDEV_NAME     "goodix,goodix_fp"
-#define OPLUS_SPIDEV_NAME   "oplus,oplus_fp"
+#define OPPO_SPIDEV_NAME   "oppo,oppo_fp"
 /*device name after register in charater*/
 #define GF_DEV_NAME            "goodix_fp"
 #define	GF_INPUT_NAME	    "qwerty"	/*"goodix_fp" */
@@ -995,7 +995,7 @@ static int gf_remove(struct platform_device *pdev)
 
 static struct of_device_id gx_match_table[] = {
 	{ .compatible = GF_SPIDEV_NAME },
-	{ .compatible = OPLUS_SPIDEV_NAME },
+	{ .compatible = OPPO_SPIDEV_NAME },
 	{},
 };
 

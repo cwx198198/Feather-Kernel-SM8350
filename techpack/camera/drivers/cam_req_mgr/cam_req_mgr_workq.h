@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _CAM_REQ_MGR_WORKQ_H_
@@ -13,14 +13,9 @@
 #include <linux/workqueue.h>
 #include <linux/slab.h>
 #include <linux/timer.h>
+#include <linux/kthread.h>
 
 #include "cam_req_mgr_core.h"
-
-/* Threshold for scheduling delay in ms */
-#define CAM_WORKQ_SCHEDULE_TIME_THRESHOLD   5
-
-/* Threshold for execution delay in ms */
-#define CAM_WORKQ_EXE_TIME_THRESHOLD        10
 
 /* Flag to create a high priority workq */
 #define CAM_WORKQ_FLAG_HIGH_PRIORITY             (1 << 0)
@@ -31,6 +26,13 @@
  * given CPU.
  */
 #define CAM_WORKQ_FLAG_SERIAL                    (1 << 1)
+
+/*
+ * Response time threshold in ms beyond which it is considered
+ * as workq scheduling/processing delay.
+ */
+#define CAM_WORKQ_RESPONSE_TIME_THRESHOLD   5
+
 
 /* Task priorities, lower the number higher the priority*/
 enum crm_task_priority {
@@ -75,7 +77,6 @@ struct crm_workq_task {
  * @job         : workqueue internal job struct
  * @lock_bh     : lock for task structs
  * @in_irq      : set true if workque can be used in irq context
- * @workq_scheduled_ts: enqueue time of workq
  * task -
  * @lock        : Current task's lock handle
  * @pending_cnt : # of tasks left in queue
@@ -92,6 +93,7 @@ struct cam_req_mgr_core_workq {
 	spinlock_t                 lock_bh;
 	uint32_t                   in_irq;
 	ktime_t                    workq_scheduled_ts;
+	char                       workq_name[128];
 
 	/* tasks */
 	struct {
@@ -104,6 +106,8 @@ struct cam_req_mgr_core_workq {
 		struct crm_workq_task *pool;
 		uint32_t               num_task;
 	} task;
+
+	struct task_struct            *thread;
 };
 
 /**
@@ -149,6 +153,14 @@ void cam_req_mgr_workq_destroy(struct cam_req_mgr_core_workq **workq);
  */
 int cam_req_mgr_workq_enqueue_task(struct crm_workq_task *task,
 	void *priv, int32_t prio);
+
+/**
+ * cam_req_mgr_thread_switch_delay_detect()
+ * @brief: Detects if workq delay has occurred or not
+ * @timestamp: workq scheduled timestamp
+ */
+void cam_req_mgr_thread_switch_delay_detect(
+	ktime_t timestamp);
 
 /**
  * cam_req_mgr_workq_get_task()

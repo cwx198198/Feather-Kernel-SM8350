@@ -47,7 +47,7 @@
 Module.symvers
 modules.builtin
 modules.order
-
+! .github/
 #
 # Top-level generic files
 #
@@ -120,6 +120,7 @@ GTAGS
 # id-utils files
 ID
 
+*.orig
 *~
 \#*#
 
@@ -146,10 +147,10 @@ x509.genkey
 # Clang's compilation database file
 /compile_commands.json
 
-# vendor device tree directories
-arch/arm/boot/dts/vendor
+# generated defconfigs
+arch/*/configs/vendor/*_defconfig
 
-#
-#Ignoring Android.bp link file
-#
-Android.bp
+# vendor device tree directories
+arch/arm64/boot/dts/vendor
+arch/arm/boot/dts/vendor
+drivers/soc/oplus/oplus_wakelock

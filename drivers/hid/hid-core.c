@@ -8,8 +8,6 @@
  *  Copyright (c) 2006-2012 Jiri Kosina
  */
 
-/*
- */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -290,7 +288,7 @@ static int hid_add_field(struct hid_parser *parser, unsigned report_type, unsign
 	offset = report->size;
 	report->size += parser->global.report_size * parser->global.report_count;
 
-	if (IS_BUILTIN(CONFIG_UHID) && parser->device->ll_driver == &uhid_hid_driver)
+	if (IS_ENABLED(CONFIG_UHID) && parser->device->ll_driver == &uhid_hid_driver)
 		max_buffer_size = UHID_DATA_MAX;
 
 	/* Total size check: Allow for possible report index byte */
@@ -916,7 +914,16 @@ static int hid_scan_report(struct hid_device *hid)
 				hid->group = HID_GROUP_RMI;
 		break;
 	}
+#if IS_ENABLED(CONFIG_OPLUS_BT_BUG_STABILITY)
+//add for BLE-M1 uhid group change HID_GROUP_GENERIC
+	if (0x248a == hid->vendor && 2 == hid->group) {
+		hid_warn(hid, "scan_report change to GENERIC %u\n", hid->group);
+		hid->group = HID_GROUP_GENERIC;
+	}
 
+	/* fall back to generic driver in case specific driver doesn't exist */
+	hid_warn(hid, "report vendor %u,group %u\n", hid->vendor, hid->group);
+#endif /* CONFIG_OPLUS_BT_BUG_STABILITY */
 	kfree(parser->collection_stack);
 	vfree(parser);
 	return 0;
@@ -1111,8 +1118,6 @@ static void hid_apply_multiplier(struct hid_device *hid,
 	while (multiplier_collection->parent_idx != -1 &&
 	       multiplier_collection->type != HID_COLLECTION_LOGICAL)
 		multiplier_collection = &hid->collection[multiplier_collection->parent_idx];
-	if (multiplier_collection->type != HID_COLLECTION_LOGICAL)
-		multiplier_collection = NULL;
 
 	effective_multiplier = hid_calculate_multiplier(hid, multiplier);
 
@@ -1435,6 +1440,7 @@ static void implement(const struct hid_device *hid, u8 *report,
 			hid_warn(hid,
 				 "%s() called with too large value %d (n: %d)! (%s)\n",
 				 __func__, value, n, current->comm);
+			WARN_ON(1);
 			value &= m;
 		}
 	}
@@ -1649,14 +1655,11 @@ u8 *hid_alloc_report_buf(struct hid_report *report, gfp_t flags)
 	/*
 	 * 7 extra bytes are necessary to achieve proper functionality
 	 * of implement() working on 8 byte chunks
-	 * 1 extra byte for the report ID if it is null (not used) so
-	 * we can reserve that extra byte in the first position of the buffer
-	 * when sending it to .raw_request()
 	 */
 
-	u32 len = hid_report_len(report) + 7 + (report->id == 0);
+	u32 len = hid_report_len(report) + 7;
 
-	return kzalloc(len, flags);
+	return kmalloc(len, flags);
 }
 EXPORT_SYMBOL_GPL(hid_alloc_report_buf);
 
@@ -1717,7 +1720,7 @@ static struct hid_report *hid_get_report(struct hid_report_enum *report_enum,
 int __hid_request(struct hid_device *hid, struct hid_report *report,
 		int reqtype)
 {
-	char *buf, *data_buf;
+	char *buf;
 	int ret;
 	u32 len;
 
@@ -1725,19 +1728,13 @@ int __hid_request(struct hid_device *hid, struct hid_report *report,
 	if (!buf)
 		return -ENOMEM;
 
-	data_buf = buf;
 	len = hid_report_len(report);
 
-	if (report->id == 0) {
-		/* reserve the first byte for the report ID */
-		data_buf++;
-		len++;
-	}
-
 	if (reqtype == HID_REQ_SET_REPORT)
-		hid_output_report(report, data_buf);
+		hid_output_report(report, buf);
 
-	ret = hid_hw_raw_request(hid, report->id, buf, len, report->type, reqtype);
+	ret = hid->ll_driver->raw_request(hid, report->id, buf, len,
+					  report->type, reqtype);
 	if (ret < 0) {
 		dbg_hid("unable to complete request: %d\n", ret);
 		goto out;
@@ -1777,7 +1774,7 @@ int hid_report_raw_event(struct hid_device *hid, int type, u8 *data, u32 size,
 
 	rsize = hid_compute_report_size(report);
 
-	if (IS_BUILTIN(CONFIG_UHID) && hid->ll_driver == &uhid_hid_driver)
+	if (IS_ENABLED(CONFIG_UHID) && hid->ll_driver == &uhid_hid_driver)
 		max_buffer_size = UHID_DATA_MAX;
 
 	if (report_enum->numbered && rsize >= max_buffer_size)

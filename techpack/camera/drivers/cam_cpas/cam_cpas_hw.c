@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/device.h>
@@ -110,10 +110,6 @@ int cam_cpas_util_reg_update(struct cam_hw_info *cpas_hw,
 	int reg_base_index;
 
 	if (reg_info->enable == false)
-		return 0;
-
-	if (reg_info->is_fuse_based &&
-		!cam_cpas_is_feature_supported(CAM_CPAS_RT_OT_FUSE, 0xFF, 0))
 		return 0;
 
 	reg_base_index = cpas_core->regbase_index[reg_base];
@@ -1030,7 +1026,6 @@ static int cam_cpas_util_apply_default_axi_vote(
 	struct cam_cpas *cpas_core = (struct cam_cpas *) cpas_hw->core_info;
 	struct cam_cpas_axi_port *axi_port = NULL;
 	uint64_t mnoc_ab_bw = 0, mnoc_ib_bw = 0;
-	uint64_t applied_ab_bw = 0, applied_ib_bw = 0;
 	int rc = 0, i = 0;
 
 	mutex_lock(&cpas_core->tree_lock);
@@ -1058,8 +1053,6 @@ static int cam_cpas_util_apply_default_axi_vote(
 				mnoc_ab_bw, mnoc_ib_bw, rc);
 			goto unlock_tree;
 		}
-		cpas_core->axi_port[i].applied_ab_bw = applied_ab_bw;
-		cpas_core->axi_port[i].applied_ib_bw = applied_ib_bw;
 	}
 
 unlock_tree:
@@ -1421,7 +1414,7 @@ static int cam_cpas_hw_start(void *hw_priv, void *start_args,
 		goto error;
 	}
 
-	CAM_DBG(CAM_CPAS,
+	CAM_INFO(CAM_CPAS,
 		"AHB :client=[%d][%s][%d] type[%d], level[%d], applied[%d]",
 		client_indx, cpas_client->data.identifier,
 		cpas_client->data.cell_index,
@@ -1487,7 +1480,7 @@ static int cam_cpas_hw_start(void *hw_priv, void *start_args,
 				goto remove_axi_vote;
 			}
 		}
-		CAM_DBG(CAM_CPAS, "irq_count=%d\n",
+		CAM_INFO(CAM_CPAS, "irq_count=%d\n",
 			atomic_read(&cpas_core->irq_count));
 
 		cam_smmu_reset_cb_page_fault_cnt();
@@ -1497,7 +1490,7 @@ static int cam_cpas_hw_start(void *hw_priv, void *start_args,
 	cpas_client->started = true;
 	cpas_core->streamon_clients++;
 
-	CAM_DBG(CAM_CPAS, "client=[%d][%s][%d] streamon_clients=%d",
+	CAM_INFO(CAM_CPAS, "client=[%d][%s][%d] streamon_clients=%d",
 		client_indx, cpas_client->data.identifier,
 		cpas_client->data.cell_index, cpas_core->streamon_clients);
 
@@ -1579,7 +1572,7 @@ static int cam_cpas_hw_stop(void *hw_priv, void *stop_args,
 	mutex_lock(&cpas_core->client_mutex[client_indx]);
 	cpas_client = cpas_core->cpas_client[client_indx];
 
-	CAM_DBG(CAM_CPAS, "Client=[%d][%s][%d] streamon_clients=%d",
+	CAM_INFO(CAM_CPAS, "Client=[%d][%s][%d] streamon_clients=%d",
 		client_indx, cpas_client->data.identifier,
 		cpas_client->data.cell_index, cpas_core->streamon_clients);
 
@@ -1651,7 +1644,7 @@ static int cam_cpas_hw_stop(void *hw_priv, void *stop_args,
 			CAM_ERR(CAM_CPAS, "disable_resorce failed, rc=%d", rc);
 			goto done;
 		}
-		CAM_DBG(CAM_CPAS, "Disabled all the resources: irq_count=%d",
+		CAM_INFO(CAM_CPAS, "Disabled all the resources: irq_count=%d",
 			atomic_read(&cpas_core->irq_count));
 		cpas_hw->hw_state = CAM_HW_STATE_POWER_DOWN;
 	}
@@ -2034,6 +2027,10 @@ static void cam_cpas_update_monitor_array(struct cam_hw_info *cpas_hw,
 		uint32_t be_mnoc_offset =
 			soc_private->rpmh_info[CAM_RPMH_BCM_BE_OFFSET] +
 			(0x4 * soc_private->rpmh_info[CAM_RPMH_BCM_MNOC_INDEX]);
+		//deleted when upgrading code base, check if need restoring
+		//uint32_t be_shub_offset =
+		//	soc_private->rpmh_info[CAM_RPMH_BCM_BE_OFFSET] +
+		//	(0x4 * 1); /* i=1 for SHUB, hardcode for now */
 
 		/*
 		 * 0x4, 0x800 - DDR
@@ -2043,6 +2040,9 @@ static void cam_cpas_update_monitor_array(struct cam_hw_info *cpas_hw,
 		entry->fe_mnoc = cam_io_r_mb(rpmh_base + fe_mnoc_offset);
 		entry->be_ddr = cam_io_r_mb(rpmh_base + be_ddr_offset);
 		entry->be_mnoc = cam_io_r_mb(rpmh_base + be_mnoc_offset);
+        /*deleted when upgrading code base, check if need restoring
+		entry->be_shub = cam_io_r_mb(rpmh_base + be_shub_offset);
+        */
 	}
 
 	entry->camnoc_fill_level[0] = cam_io_r_mb(
@@ -2124,13 +2124,20 @@ static void cam_cpas_dump_monitor_array(
 				entry->axi_info[j].applied_ib_bw,
 				entry->axi_info[j].camnoc_bw);
 		}
-
+        /*deleted when upgrading code base, check if need restoring
 		if (cpas_core->regbase_index[CAM_CPAS_REG_RPMH] != -1) {
+			CAM_INFO(CAM_CPAS,
+				"fe_ddr=0x%x, fe_mnoc=0x%x, be_ddr=0x%x, be_mnoc=0x%x, be_shub=0x%x",
+				entry->fe_ddr, entry->fe_mnoc,
+				entry->be_ddr, entry->be_mnoc, entry->be_shub);
+		}
+        */
+        if (cpas_core->regbase_index[CAM_CPAS_REG_RPMH] != -1) {
 			CAM_INFO(CAM_CPAS,
 				"fe_ddr=0x%x, fe_mnoc=0x%x, be_ddr=0x%x, be_mnoc=0x%x",
 				entry->fe_ddr, entry->fe_mnoc,
 				entry->be_ddr, entry->be_mnoc);
-		}
+        }
 
 		CAM_INFO(CAM_CPAS,
 			"CAMNOC REG[Queued Pending] linear[%d %d] rdi0_wr[%d %d] ubwc_stats0[%d %d] ubwc_stats1[%d %d] rdi1_wr[%d %d]",

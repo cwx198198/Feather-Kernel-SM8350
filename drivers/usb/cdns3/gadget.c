@@ -661,11 +661,7 @@ void cdns3_gadget_giveback(struct cdns3_endpoint *priv_ep,
 			return;
 	}
 
-	/*
-	 * zlp request is appended by driver, needn't call usb_gadget_giveback_request() to notify
-	 * gadget composite driver.
-	 */
-	if (request->complete && request->buf != priv_dev->zlp_buf) {
+	if (request->complete) {
 		spin_unlock(&priv_dev->lock);
 		usb_gadget_giveback_request(&priv_ep->endpoint,
 					    request);
@@ -1920,7 +1916,6 @@ static int cdns3_gadget_ep_disable(struct usb_ep *ep)
 			  "%s is already disabled\n", priv_ep->name))
 		return 0;
 
-	local_bh_disable();
 	spin_lock_irqsave(&priv_dev->lock, flags);
 
 	trace_cdns3_gadget_ep_disable(priv_ep);
@@ -1956,11 +1951,11 @@ static int cdns3_gadget_ep_disable(struct usb_ep *ep)
 
 	while (!list_empty(&priv_ep->wa2_descmiss_req_list)) {
 		priv_req = cdns3_next_priv_request(&priv_ep->wa2_descmiss_req_list);
-		list_del_init(&priv_req->list);
 
 		kfree(priv_req->request.buf);
 		cdns3_gadget_ep_free_request(&priv_ep->endpoint,
 					     &priv_req->request);
+		list_del_init(&priv_req->list);
 		--priv_ep->wa2_counter;
 	}
 
@@ -1977,7 +1972,6 @@ static int cdns3_gadget_ep_disable(struct usb_ep *ep)
 	priv_ep->flags &= ~EP_ENABLED;
 
 	spin_unlock_irqrestore(&priv_dev->lock, flags);
-	local_bh_enable();
 
 	return ret;
 }

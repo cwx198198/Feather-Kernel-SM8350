@@ -1,7 +1,7 @@
 /************************************************************************************
 ** File: - fingerprints_hal\drivers\egis_fp\et713_mtk.c
 ** VENDOR_EDIT
-** Copyright (C), 2009-2019, OPLUS Mobile Comm Corp., Ltd
+** Copyright (C), 2009-2019, OPPO Mobile Comm Corp., Ltd
 **
 ** Description:
 **      egis fingerprint kernel device driver
@@ -85,7 +85,7 @@ struct of_device_id egistec_match_table[] = {
 
 struct of_device_id et713_spi_of_match[] = {
 //  { .compatible = "mediatek,fingerspi-fp", },
-    { .compatible = "oplus,oplus_fp", },
+    { .compatible = "oppo,oppo_fp", },
     {}
 };
 

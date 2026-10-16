@@ -7,10 +7,8 @@
 #include "cam_cci_core.h"
 #include "cam_cci_dev.h"
 #include "cam_req_mgr_workq.h"
-#include "cam_common_util.h"
-#define DUMP_CCI_REGISTERS
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-//#define DUMP_CCI_REGISTERS 1
+#define DUMP_CCI_REGISTERS 1
 #include "cam_cci_ctrl_interface.h"
 #endif
 
@@ -48,11 +46,6 @@ static void cam_cci_flush_queue(struct cci_device *cci_dev,
 		&cci_dev->soc_info;
 	void __iomem *base = soc_info->reg_map[0].mem_base;
 
-    uint32_t reg_offset = 0x114;
-    uint32_t read_val = cam_io_r_mb(base + reg_offset);
-
-    CAM_INFO(CAM_CCI, "before halt offset = 0x%X value = 0x%X", reg_offset, read_val);
-
 	cam_io_w_mb(1 << master, base + CCI_HALT_REQ_ADDR);
 	if (!cci_dev->cci_master_info[master].status)
 		reinit_completion(&cci_dev->cci_master_info[master]
@@ -65,10 +58,6 @@ static void cam_cci_flush_queue(struct cci_device *cci_dev,
 			cci_dev->soc_info.index, master);
 
 		/* Set reset pending flag to true */
-		CAM_ERR(CAM_CCI, "wait timeout on cci dev %d cci master %d",
-            cci_dev->soc_info.index, master);
-        read_val = cam_io_r_mb(base + reg_offset);
-        CAM_INFO(CAM_CCI, "after timeout offset = 0x%X value = 0x%X", reg_offset, read_val);
 		cci_dev->cci_master_info[master].reset_pending = true;
 		cci_dev->cci_master_info[master].status = 0;
 
@@ -89,10 +78,6 @@ static void cam_cci_flush_queue(struct cci_device *cci_dev,
 				"Retry:: wait timeout for reset complete for cci: %d master: %d",
 				cci_dev->soc_info.index, master);
 		}
-
-        read_val = cam_io_r_mb(base + reg_offset);
-        CAM_INFO(CAM_CCI, "after reset offset = 0x%X value = 0x%X", reg_offset, read_val);
-
 		cci_dev->cci_master_info[master].status = 0;
 	}
 
@@ -231,9 +216,6 @@ void cam_cci_dump_registers(struct cci_device *cci_dev,
 	void __iomem *base = cci_dev->soc_info.reg_map[0].mem_base;
 
 	dump_en = cci_dev->dump_en;
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	dump_en = 3;
-#endif
 	if (!(dump_en & CAM_CCI_NACK_DUMP_EN) &&
 		!(dump_en & CAM_CCI_TIMEOUT_DUMP_EN)) {
 		CAM_DBG(CAM_CCI,
@@ -1140,53 +1122,46 @@ static int32_t cam_cci_burst_read(struct v4l2_subdev *sd,
 			goto rel_mutex_q;
 		}
 
-		while (true) {
-			read_words = cam_io_r_mb(base +
-				CCI_I2C_M0_READ_BUF_LEVEL_ADDR +
-				master * 0x100);
-			if (read_words <= 0) {
-				CAM_DBG(CAM_CCI, "FIFO Buffer lvl is 0");
-				break;
-			}
-
-			j++;
-			CAM_DBG(CAM_CCI, "Iteration: %u read_words %d",
-				j, read_words);
-
-			total_read_words += read_words;
-			while (read_words > 0) {
-				val = cam_io_r_mb(base +
-					CCI_I2C_M0_READ_DATA_ADDR +
-					master * 0x100);
-				for (i = 0; (i < 4) &&
-					(index < read_cfg->num_byte); i++) {
-					CAM_DBG(CAM_CCI, "i:%d index:%d",
-						i, index);
-					if (!first_byte) {
-						CAM_DBG(CAM_CCI, "sid 0x%x",
-							val & 0xFF);
-						first_byte++;
-					} else {
-						read_cfg->data[index] =
-							(val  >> (i * 8)) & 0xFF;
-						CAM_DBG(CAM_CCI, "data[%d] 0x%x",
-							index,
-							read_cfg->data[index]);
-						index++;
-					}
-				}
-				read_words--;
-			}
-
-			CAM_DBG(CAM_CCI,
-				"Iteration:%u total_read_words %d",
-				j, total_read_words);
+		read_words = cam_io_r_mb(base +
+			CCI_I2C_M0_READ_BUF_LEVEL_ADDR + master * 0x100);
+		if (read_words <= 0) {
+			CAM_DBG(CAM_CCI, "FIFO Buffer lvl is 0");
+			continue;
 		}
+
+		j++;
+		CAM_DBG(CAM_CCI, "Iteration: %u read_words %d", j, read_words);
+
+		total_read_words += read_words;
+		while (read_words > 0) {
+			val = cam_io_r_mb(base +
+				CCI_I2C_M0_READ_DATA_ADDR + master * 0x100);
+			for (i = 0; (i < 4) &&
+				(index < read_cfg->num_byte); i++) {
+				CAM_DBG(CAM_CCI, "i:%d index:%d", i, index);
+				if (!first_byte) {
+					CAM_DBG(CAM_CCI, "sid 0x%x",
+						val & 0xFF);
+					first_byte++;
+				} else {
+					read_cfg->data[index] =
+						(val  >> (i * 8)) & 0xFF;
+					CAM_DBG(CAM_CCI, "data[%d] 0x%x", index,
+						read_cfg->data[index]);
+					index++;
+				}
+			}
+			read_words--;
+		}
+
+		CAM_DBG(CAM_CCI, "Iteraion:%u total_read_words %d",
+			j, total_read_words);
 
 		spin_lock_irqsave(&cci_dev->lock_status, flags);
 		if (cci_dev->irqs_disabled) {
 			irq_mask_update =
-				cam_io_r_mb(base + CCI_IRQ_MASK_1_ADDR);
+				cam_io_r_mb(base + CCI_IRQ_MASK_1_ADDR) |
+				CCI_IRQ_STATUS_1_I2C_M0_RD_THRESHOLD;
 			if (master == MASTER_0 && cci_dev->irqs_disabled &
 				CCI_IRQ_STATUS_1_I2C_M0_RD_THRESHOLD)
 				irq_mask_update |=
@@ -1527,10 +1502,8 @@ static void cam_cci_write_async_helper(struct work_struct *work)
 	enum cci_i2c_master_t master;
 	struct cam_cci_master_info *cci_master_info;
 
-	cam_common_util_thread_switch_delay_detect(
-		"CCI workq schedule",
-		write_async->workq_scheduled_ts,
-		CAM_WORKQ_SCHEDULE_TIME_THRESHOLD);
+	cam_req_mgr_thread_switch_delay_detect(
+		write_async->workq_scheduled_ts);
 	cci_dev = write_async->cci_dev;
 	i2c_msg = &write_async->c_ctrl.cfg.cci_i2c_write_cfg;
 	master = write_async->c_ctrl.cci_info->cci_i2c_master;
@@ -1886,7 +1859,7 @@ int32_t cam_cci_core_cfg(struct v4l2_subdev *sd,
 		return -EINVAL;
 	}
 
-	if (cci_dev->cci_master_info[master].status < 0) {
+	if ((cci_dev->cci_master_info[master].status < 0) && (cci_ctrl->cmd != MSM_CCI_RELEASE)) {
 		CAM_WARN(CAM_CCI, "CCI hardware is resetting");
 		return -EAGAIN;
 	}
@@ -1908,12 +1881,14 @@ int32_t cam_cci_core_cfg(struct v4l2_subdev *sd,
 		 * CCI version 1.2 does not support burst read
 		 * due to the absence of the read threshold register
 		 */
+		mutex_lock(&cci_dev->init_mutex);
 		if (cci_dev->hw_version == CCI_VERSION_1_2_9) {
 			CAM_DBG(CAM_CCI, "cci-v1.2 no burst read");
 			rc = cam_cci_read_bytes_v_1_2(sd, cci_ctrl);
 		} else {
 			rc = cam_cci_read_bytes(sd, cci_ctrl);
 		}
+                mutex_unlock(&cci_dev->init_mutex);
 		break;
 	case MSM_CCI_I2C_WRITE:
 	case MSM_CCI_I2C_WRITE_SEQ:
@@ -1921,7 +1896,9 @@ int32_t cam_cci_core_cfg(struct v4l2_subdev *sd,
 	case MSM_CCI_I2C_WRITE_SYNC:
 	case MSM_CCI_I2C_WRITE_ASYNC:
 	case MSM_CCI_I2C_WRITE_SYNC_BLOCK:
+                mutex_lock(&cci_dev->init_mutex);
 		rc = cam_cci_write(sd, cci_ctrl);
+                mutex_unlock(&cci_dev->init_mutex);
 		break;
 	case MSM_CCI_GPIO_WRITE:
 		break;

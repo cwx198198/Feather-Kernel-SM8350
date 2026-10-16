@@ -280,8 +280,12 @@ static bool bad_stack_expansion(struct pt_regs *regs, unsigned long address,
 		if ((flags & FAULT_FLAG_WRITE) && (flags & FAULT_FLAG_USER) &&
 		    access_ok(nip, sizeof(*nip))) {
 			unsigned int inst;
+			int res;
 
-			if (!probe_user_read(&inst, nip, sizeof(inst)))
+			pagefault_disable();
+			res = __get_user_inatomic(inst, nip);
+			pagefault_enable();
+			if (!res)
 				return !store_updates_sp(inst);
 			*must_retry = true;
 		}
@@ -433,7 +437,7 @@ static int __do_page_fault(struct pt_regs *regs, unsigned long address,
 {
 	struct vm_area_struct * vma;
 	struct mm_struct *mm = current->mm;
-	unsigned int flags = FAULT_FLAG_DEFAULT;
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
  	int is_exec = TRAP(regs) == 0x400;
 	int is_user = user_mode(regs);
 	int is_write = page_fault_is_write(error_code);
@@ -581,18 +585,28 @@ good_area:
 
 	major |= fault & VM_FAULT_MAJOR;
 
-	if (fault_signal_pending(fault, regs))
-		return user_mode(regs) ? 0 : SIGBUS;
-
 	/*
 	 * Handle the retry right now, the mmap_sem has been released in that
 	 * case.
 	 */
 	if (unlikely(fault & VM_FAULT_RETRY)) {
+		/* We retry only once */
 		if (flags & FAULT_FLAG_ALLOW_RETRY) {
+			/*
+			 * Clear FAULT_FLAG_ALLOW_RETRY to avoid any risk
+			 * of starvation.
+			 */
+			flags &= ~FAULT_FLAG_ALLOW_RETRY;
 			flags |= FAULT_FLAG_TRIED;
-			goto retry;
+			if (!fatal_signal_pending(current))
+				goto retry;
 		}
+
+		/*
+		 * User mode? Just return to handle the fatal exception otherwise
+		 * return to bad_page_fault
+		 */
+		return is_user ? 0 : SIGBUS;
 	}
 
 	up_read(&current->mm->mmap_sem);

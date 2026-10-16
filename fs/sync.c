@@ -20,7 +20,12 @@
 
 #define VALID_FLAGS (SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE| \
 			SYNC_FILE_RANGE_WAIT_AFTER)
-
+#ifdef OPLUS_FEATURE_HEALTHINFO
+// Add for get cpu load
+#ifdef CONFIG_OPLUS_HEALTHINFO
+#include <soc/oplus/healthinfo.h>
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 /*
  * Do the filesystem syncing work. For simple filesystems
  * writeback_inodes_sb(sb) just dirties buffers with inodes so we have to
@@ -76,8 +81,7 @@ static void sync_inodes_one_sb(struct super_block *sb, void *arg)
 
 static void sync_fs_one_sb(struct super_block *sb, void *arg)
 {
-	if (!sb_rdonly(sb) && !(sb->s_iflags & SB_I_SKIP_SYNC) &&
-	    sb->s_op->sync_fs)
+	if (!sb_rdonly(sb) && sb->s_op->sync_fs)
 		sb->s_op->sync_fs(sb, *(int *)arg);
 }
 
@@ -217,12 +221,23 @@ static int do_fsync(unsigned int fd, int datasync)
 {
 	struct fd f = fdget(fd);
 	int ret = -EBADF;
-
+#ifdef OPLUS_FEATURE_HEALTHINFO
+// Add for record  fsync  time
+#ifdef CONFIG_OPLUS_HEALTHINFO
+    unsigned long oppo_fsync_time = jiffies;
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 	if (f.file) {
 		ret = vfs_fsync(f.file, datasync);
 		fdput(f);
 		inc_syscfs(current);
 	}
+#ifdef OPLUS_FEATURE_HEALTHINFO
+// Add for record  fsync  time
+#ifdef CONFIG_OPLUS_HEALTHINFO
+	ohm_schedstats_record(OHM_SCHED_FSYNC, current, jiffies_to_msecs(jiffies - oppo_fsync_time));
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 	return ret;
 }
 

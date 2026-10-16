@@ -1694,18 +1694,9 @@ static int glink_slatecom_rx_data(struct glink_slatecom *glink,
 
 	if (intent->size - intent->offset < chunk_size) {
 		dev_err(glink->dev, "Insufficient space in intent\n");
-		glink_slatecom_free_intent(channel, intent);
 		mutex_unlock(&channel->intent_lock);
 
 		/* The packet header lied, drop payload */
-		return msglen;
-	}
-
-	if (chunk_size % WORD_SIZE) {
-		dev_err(glink->dev, "For chunk_size %d use short packet\n",
-					chunk_size);
-		glink_slatecom_free_intent(channel, intent);
-		mutex_unlock(&channel->intent_lock);
 		return msglen;
 	}
 
@@ -1900,7 +1891,7 @@ static void glink_slatecom_handle_rx_done(struct glink_slatecom *glink,
 	mutex_unlock(&channel->intent_lock);
 }
 
-static int glink_slatecom_process_cmd(struct glink_slatecom *glink, void *rx_data,
+static void glink_slatecom_process_cmd(struct glink_slatecom *glink, void *rx_data,
 				  u32 rx_size)
 {
 	struct glink_slatecom_msg *msg;
@@ -1909,18 +1900,12 @@ static int glink_slatecom_process_cmd(struct glink_slatecom *glink, void *rx_dat
 	unsigned int param3;
 	unsigned int param4;
 	unsigned int cmd;
-	u32 offset = 0;
-	int ret = 0;
+	int offset = 0;
+	int ret;
 	u16 name_len;
 	char *name;
 
 	while (offset < rx_size) {
-		if (rx_size - offset < sizeof(struct glink_slatecom_msg)) {
-			ret = -EBADMSG;
-			GLINK_ERR(glink, "%s: Error %d process cmd\n", __func__, ret);
-			return ret;
-		}
-
 		msg = (struct glink_slatecom_msg *)(rx_data + offset);
 		offset += sizeof(*msg);
 
@@ -1941,7 +1926,7 @@ static int glink_slatecom_process_cmd(struct glink_slatecom *glink, void *rx_dat
 		case SLATECOM_CMD_CLOSE_ACK:
 			glink_slatecom_rx_defer(glink,
 					   rx_data + offset - sizeof(*msg),
-					   rx_size - offset + sizeof(*msg), 0);
+					   rx_size + offset - sizeof(*msg), 0);
 			break;
 		case SLATECOM_CMD_RX_INTENT_REQ:
 			glink_slatecom_handle_intent_req(glink, param1, param2);
@@ -1954,7 +1939,7 @@ static int glink_slatecom_process_cmd(struct glink_slatecom *glink, void *rx_dat
 			name = rx_data + offset;
 			glink_slatecom_rx_defer(glink,
 					   rx_data + offset - sizeof(*msg),
-					   rx_size - offset + sizeof(*msg),
+					   rx_size + offset - sizeof(*msg),
 					   ALIGN(name_len, SLATECOM_ALIGNMENT));
 
 			offset += ALIGN(name_len, SLATECOM_ALIGNMENT);
@@ -2003,7 +1988,6 @@ static int glink_slatecom_process_cmd(struct glink_slatecom *glink, void *rx_dat
 			break;
 		}
 	}
-	return ret;
 }
 
 /**
@@ -2241,6 +2225,7 @@ static int glink_slatecom_probe(struct platform_device *pdev)
 	dev = glink->dev;
 	dev->of_node = pdev->dev.of_node;
 	dev->release = glink_slatecom_release;
+	dev_set_name(dev, "%s", dev->of_node->name);
 	dev_set_drvdata(dev, glink);
 
 	ret = of_property_read_string(dev->of_node, "label", &glink->name);

@@ -1,7 +1,7 @@
 /************************************************************************************
  ** File: - vendor/fingerprint/goodix/gf_hal/gf_queue.c
  ** OPLUS_FEATURE_FINGERPRINT
- ** Copyright (C), 2008-2018, OPLUS Mobile Comm Corp., Ltd
+ ** Copyright (C), 2008-2018, OPPO Mobile Comm Corp., Ltd
  **
  ** Description:
  **      Fingerprint SENSORTEST FOR GOODIX (SW23)

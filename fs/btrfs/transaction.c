@@ -174,10 +174,8 @@ loop:
 	cur_trans = fs_info->running_transaction;
 	if (cur_trans) {
 		if (TRANS_ABORTED(cur_trans)) {
-			const int abort_error = cur_trans->aborted;
-
 			spin_unlock(&fs_info->trans_lock);
-			return abort_error;
+			return cur_trans->aborted;
 		}
 		if (btrfs_blocked_trans_types[cur_trans->state] & type) {
 			spin_unlock(&fs_info->trans_lock);
@@ -192,11 +190,10 @@ loop:
 	spin_unlock(&fs_info->trans_lock);
 
 	/*
-	 * If we are ATTACH or TRANS_JOIN_NOSTART, we just want to catch the
-	 * current transaction, and commit it. If there is no transaction, just
-	 * return ENOENT.
+	 * If we are ATTACH, we just want to catch the current transaction,
+	 * and commit it. If there is no transaction, just return ENOENT.
 	 */
-	if (type == TRANS_ATTACH || type == TRANS_JOIN_NOSTART)
+	if (type == TRANS_ATTACH)
 		return -ENOENT;
 
 	/*
@@ -1228,7 +1225,6 @@ static noinline int commit_fs_roots(struct btrfs_trans_handle *trans)
 			radix_tree_tag_clear(&fs_info->fs_roots_radix,
 					(unsigned long)root->root_key.objectid,
 					BTRFS_ROOT_TRANS_TAG);
-			btrfs_qgroup_free_meta_all_pertrans(root);
 			spin_unlock(&fs_info->fs_roots_radix_lock);
 
 			btrfs_free_log(trans, root);
@@ -1253,6 +1249,7 @@ static noinline int commit_fs_roots(struct btrfs_trans_handle *trans)
 			if (ret2)
 				return ret2;
 			spin_lock(&fs_info->fs_roots_radix_lock);
+			btrfs_qgroup_free_meta_all_pertrans(root);
 		}
 	}
 	spin_unlock(&fs_info->fs_roots_radix_lock);
@@ -1546,7 +1543,7 @@ static noinline int create_pending_snapshot(struct btrfs_trans_handle *trans,
 	}
 	/* see comments in should_cow_block() */
 	set_bit(BTRFS_ROOT_FORCE_COW, &root->state);
-	smp_mb__after_atomic();
+	smp_wmb();
 
 	btrfs_set_root_node(new_root_item, tmp);
 	/* record when the snapshot was created in key.offset */

@@ -554,25 +554,11 @@ static void usb_cser_start_rx(struct f_cdev *port);
 static void usb_cser_resume(struct usb_function *f)
 {
 	struct f_cdev *port = func_to_port(f);
-	struct usb_composite_dev *cdev	= f->config->cdev;
 	unsigned long flags;
 	int ret;
 
 	struct usb_request *req, *t;
 	struct usb_ep *in;
-
-	/*
-	 * Bail out if the interface is in USB3 Function Suspend state.
-	 * In that case resume is done by Function Resume request (write).
-	 */
-	if ((cdev->gadget->speed >= USB_SPEED_SUPER) &&
-			port->func_is_suspended) {
-		if (port->func_wakeup_pending) {
-			ret = usb_func_wakeup(f);
-			port->func_wakeup_pending = (ret == -EAGAIN) ? true : false;
-		}
-		return;
-	}
 
 	pr_debug("%s\n", __func__);
 	port->is_suspended = false;
@@ -732,26 +718,13 @@ static int usb_cser_notify(struct f_cdev *port, u8 type, u16 value,
 static int port_notify_serial_state(struct cserial *cser)
 {
 	struct f_cdev *port = cser_to_port(cser);
-	int status, ret;
+	int status;
 	unsigned long flags;
 	struct usb_composite_dev *cdev = port->port_usb.func.config->cdev;
-	struct usb_function *func = &cser->func;
-	struct usb_gadget *gadget;
 
 	if (port->is_suspended) {
-		gadget = cser->func.config->cdev->gadget;
 		port->pending_state_notify = true;
 		pr_debug("%s: port is suspended\n", __func__);
-		if (usb_cser_get_remote_wakeup_capable(func, gadget)) {
-			if (gadget->speed >= USB_SPEED_SUPER && port->func_is_suspended) {
-				ret = usb_func_wakeup(func);
-				port->func_wakeup_pending = (ret == -EAGAIN) ? true : false;
-			} else {
-				ret = usb_gadget_wakeup(gadget);
-			}
-		} else {
-			pr_debug("%s remote-wakeup not capable\n", __func__);
-		}
 		return 0;
 	}
 
@@ -1125,9 +1098,9 @@ static void usb_cser_read_complete(struct usb_ep *ep, struct usb_request *req)
 
 	if (req->status || !req->actual) {
 		/*
-		 * ECONNRESET can be returned when host issues clear EP halt,
-		 * restart OUT requests if so.
-		 */
+		* ECONNRESET can be returned when host issues clear EP halt,
+		* restart OUT requests if so.
+		*/
 		if (req->status == -ECONNRESET) {
 			spin_unlock_irqrestore(&port->port_lock, flags);
 			ret = usb_ep_queue(ep, req, GFP_KERNEL);
@@ -1480,10 +1453,9 @@ ssize_t f_cdev_write(struct file *file,
 		spin_unlock_irqrestore(&port->port_lock, flags);
 
 		if (gadget->speed >= USB_SPEED_SUPER
-		    && port->func_is_suspended) {
+		    && port->func_is_suspended)
 			ret = usb_func_wakeup(func);
-			port->func_wakeup_pending = (ret == -EAGAIN) ? true : false;
-		} else
+		else
 			ret = usb_gadget_wakeup(gadget);
 
 		if (ret < 0 && ret != -EACCES && ret != -EAGAIN) {
@@ -1645,7 +1617,6 @@ static long f_cdev_ioctl(struct file *fp, unsigned int cmd,
 	int i = 0;
 	uint32_t val;
 	struct f_cdev *port;
-	unsigned long flags;
 
 	port = fp->private_data;
 	if (!port) {
@@ -1670,9 +1641,7 @@ static long f_cdev_ioctl(struct file *fp, unsigned int cmd,
 		ret = f_cdev_tiocmget(port);
 		if (ret >= 0) {
 			ret = put_user(ret, (uint32_t *)arg);
-			spin_lock_irqsave(&port->port_lock, flags);
 			port->cbits_updated = false;
-			spin_unlock_irqrestore(&port->port_lock, flags);
 		}
 		break;
 	default:
@@ -1689,7 +1658,6 @@ static void usb_cser_notify_modem(void *fport, int ctrl_bits)
 	int temp;
 	struct f_cdev *port = fport;
 	struct cserial *cser;
-	unsigned long flags;
 
 	cser = &port->port_usb;
 	if (!port) {
@@ -1704,10 +1672,8 @@ static void usb_cser_notify_modem(void *fport, int ctrl_bits)
 	if (temp == port->cbits_to_modem)
 		return;
 
-	spin_lock_irqsave(&port->port_lock, flags);
 	port->cbits_to_modem = temp;
 	port->cbits_updated = true;
-	spin_unlock_irqrestore(&port->port_lock, flags);
 
 	 /* if DTR is high, update latest modem info to laptop */
 	if (port->cbits_to_modem & TIOCM_DTR) {

@@ -869,9 +869,10 @@ static int pci_register_host_bridge(struct pci_host_bridge *bridge)
 		goto free;
 
 	err = device_add(&bridge->dev);
-	if (err)
+	if (err) {
+		put_device(&bridge->dev);
 		goto free;
-
+	}
 	bus->bridge = get_device(&bridge->dev);
 	device_enable_async_suspend(bus->bridge);
 	pci_set_bus_of_node(bus);
@@ -1041,10 +1042,7 @@ static struct pci_bus *pci_alloc_child_bus(struct pci_bus *parent,
 add_dev:
 	pci_set_bus_msi_domain(child);
 	ret = device_register(&child->dev);
-	if (WARN_ON(ret < 0)) {
-		put_device(&child->dev);
-		return NULL;
-	}
+	WARN_ON(ret < 0);
 
 	pcibios_add_bus(child);
 

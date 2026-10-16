@@ -1,3 +1,6 @@
+#ifndef OPLUS_CHG_OP_DEF
+#define OPLUS_CHG_OP_DEF 1
+#endif
 #define pr_fmt(fmt) "OPLUS_CHG[COMM]: %s[%d]: " fmt, __func__, __LINE__
 
 #include <linux/module.h>
@@ -23,10 +26,7 @@
 #include "oplus_gauge.h"
 #include "oplus_chg_cfg.h"
 #include "oplus_op_def.h"
-#ifndef CONFIG_CHG_FOR_OP9_CN
-#include "oplus_warp.h"
-#include "oplus_wireless.h"
-#endif
+
 static int camera_on_count;
 
 struct oplus_chg_comm {
@@ -84,6 +84,14 @@ struct oplus_chg_comm {
 #ifdef CONFIG_OPLUS_CHG_OOS
 	struct delayed_work led_power_on_report_work;
 #endif
+	bool cmd_data_ok;
+	bool hidl_handle_cmd_ready;
+	struct mutex read_lock;
+	struct mutex cmd_data_lock;
+	struct mutex cmd_ack_lock;
+	struct oplus_chg_cmd cmd;
+	struct completion cmd_ack;
+	wait_queue_head_t read_wq;
 };
 
 static struct oplus_chg_comm_config default_chg = {
@@ -117,6 +125,7 @@ static struct oplus_chg_comm_config default_chg = {
 	.batt_curr_limit_thr_mv = 4180,
 };
 static ATOMIC_NOTIFIER_HEAD(comm_ocm_notifier);
+static ATOMIC_NOTIFIER_HEAD(comm_mutual_notifier);
 
 __maybe_unused static bool is_batt_ocm_available(struct oplus_chg_comm *dev)
 {
@@ -503,6 +512,196 @@ static int oplus_chg_comm_get_skin_temp(struct oplus_chg_comm *comm_dev)
 	return result / 100;
 }
 
+__maybe_unused static bool is_comm_ocm_available(struct oplus_chg_chip *comm_dev)
+{
+	if (!comm_dev->comm_ocm)
+		comm_dev->comm_ocm = oplus_chg_mod_get_by_name("common");
+	return !!comm_dev->comm_ocm;
+}
+
+int oplus_chg_comm_reg_mutual_notifier(struct notifier_block *nb)
+{
+	return atomic_notifier_chain_register(&comm_mutual_notifier, nb);
+}
+
+int oplus_chg_comm_unreg_mutual_notifier(struct notifier_block *nb)
+{
+	return atomic_notifier_chain_unregister(&comm_mutual_notifier, nb);
+}
+
+static void oplus_chg_comm_mutual_event(char *buf)
+{
+	atomic_notifier_call_chain(&comm_mutual_notifier, 1, buf);
+}
+
+static int oplus_chg_comm_init_mutual(struct oplus_chg_comm *comm_dev)
+{
+	int ret = 0;
+	struct oplus_chg_comm *chip = comm_dev;
+
+	chip->hidl_handle_cmd_ready = false;
+	chip->cmd_data_ok = false;
+	mutex_init(&chip->read_lock);
+	mutex_init(&chip->cmd_data_lock);
+	mutex_init(&chip->cmd_ack_lock);
+	init_waitqueue_head(&chip->read_wq);
+	init_completion(&chip->cmd_ack);
+
+	return ret;
+}
+
+ssize_t oplus_chg_comm_send_mutual_cmd(
+			struct oplus_chg_mod *comm_ocm, char *buf)
+{
+	int rc = 0;
+	struct oplus_chg_cmd cmd;
+	struct oplus_chg_cmd *pcmd;
+	struct oplus_chg_comm *chip;
+
+	if (!comm_ocm)
+		return -EINVAL;
+
+	chip = oplus_chg_mod_get_drvdata(comm_ocm);
+	if (!chip)
+		return -EINVAL;
+
+	chip->hidl_handle_cmd_ready = true;
+
+	mutex_lock(&chip->read_lock);
+	rc = wait_event_interruptible(chip->read_wq, chip->cmd_data_ok);
+	mutex_unlock(&chip->read_lock);
+	if (rc)
+		return rc;
+	if (!chip->cmd_data_ok)
+		pr_err("oplus chg false wakeup, rc=%d\n", rc);
+	pr_info("send\n");
+	mutex_lock(&chip->cmd_data_lock);
+	chip->cmd_data_ok = false;
+	memcpy(&cmd, &chip->cmd, sizeof(struct oplus_chg_cmd));
+	mutex_unlock(&chip->cmd_data_lock);
+	memcpy(buf, &cmd, sizeof(struct oplus_chg_cmd));
+	pcmd = (struct oplus_chg_cmd *)buf;
+	pr_info("success to copy to user space cmd:%d, size:%d\n",
+		pcmd->cmd, pcmd->data_size);
+
+	return sizeof(struct oplus_chg_cmd);
+}
+
+ssize_t oplus_chg_comm_response_mutual_cmd(
+			struct oplus_chg_mod *comm_ocm, const char *buf, size_t count)
+{
+	ssize_t ret = 0;
+	struct oplus_chg_comm *chip;
+	struct oplus_chg_cmd *p_cmd;
+
+	if (!comm_ocm)
+		return -EINVAL;
+
+	chip = oplus_chg_mod_get_drvdata(comm_ocm);
+	if (!chip)
+		return -EINVAL;
+
+	p_cmd = (struct oplus_chg_cmd *)buf;
+	if (count != sizeof(struct oplus_chg_cmd)) {
+		pr_err("!!!size of buf is not matched\n");
+		return -EINVAL;
+	}
+	pr_info("!!!cmd[%d]\n", p_cmd->cmd);
+
+	oplus_chg_comm_mutual_event((void *)buf);
+	complete(&chip->cmd_ack);
+
+	return ret;
+}
+
+int oplus_chg_common_set_mutual_cmd(
+			struct oplus_chg_mod *comm_ocm,
+			u32 cmd, u32 data_size, const void *data_buf)
+{
+	int rc;
+	struct oplus_chg_comm *chip;
+
+	if (!comm_ocm)
+		return CMD_ERROR_CHIP_NULL;
+
+	chip = oplus_chg_mod_get_drvdata(comm_ocm);
+	if (!chip)
+		return CMD_ERROR_CHIP_NULL;
+
+	if (!data_buf)
+		return CMD_ERROR_DATA_NULL;
+
+	if (data_size > CHG_CMD_DATA_LEN) {
+		pr_err("cmd data size is invalid\n");
+		return CMD_ERROR_DATA_INVALID;
+	}
+
+	if (!chip->hidl_handle_cmd_ready) {
+		pr_err("hidl not read\n");
+		return CMD_ERROR_HIDL_NOT_READY;
+	}
+
+	pr_info("start\n");
+	mutex_lock(&chip->cmd_ack_lock);
+	mutex_lock(&chip->cmd_data_lock);
+	memset(&chip->cmd, 0, sizeof(struct oplus_chg_cmd));
+	chip->cmd.cmd = cmd;
+	chip->cmd.data_size = data_size;
+	memcpy(chip->cmd.data_buf, data_buf, data_size);
+	chip->cmd_data_ok = true;
+	mutex_unlock(&chip->cmd_data_lock);
+	wake_up(&chip->read_wq);
+
+	reinit_completion(&chip->cmd_ack);
+	rc = wait_for_completion_timeout(&chip->cmd_ack,
+			msecs_to_jiffies(CHG_CMD_TIME_MS));
+	if (!rc) {
+		pr_err("Error, timed out sending message\n");
+		mutex_unlock(&chip->cmd_ack_lock);
+		return CMD_ERROR_TIME_OUT;
+	}
+	rc = CMD_ACK_OK;
+	pr_info("success\n");
+	mutex_unlock(&chip->cmd_ack_lock);
+
+	return rc;
+}
+
+static ssize_t oplus_chg_comm_mutual_cmd_show(struct device *dev, struct device_attribute *attr,
+		char *buf)
+{
+	int ret = 0;
+	struct oplus_chg_chip *chip = NULL;
+
+	chip = oplus_chg_get_chg_struct();
+	if (!chip) {
+		chg_err("chip is NULL\n");
+		return -EINVAL;
+	}
+
+	if (is_comm_ocm_available(chip))
+		ret = oplus_chg_comm_send_mutual_cmd(chip->comm_ocm, buf);
+
+	return ret;
+}
+
+static ssize_t oplus_chg_comm_mutual_cmd_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct oplus_chg_chip *chip = NULL;
+	chip = oplus_chg_get_chg_struct();
+	if (!chip) {
+		chg_err("chip is NULL\n");
+		return -EINVAL;
+	}
+
+	if (is_comm_ocm_available(chip))
+		oplus_chg_comm_response_mutual_cmd(chip->comm_ocm, buf, count);
+
+	return count;
+}
+
 #ifdef OPLUS_CHG_DEBUG
 static void oplus_chg_comm_set_config(struct oplus_chg_comm *comm_dev, u8 *buf)
 {
@@ -671,102 +870,12 @@ start:
 }
 #endif
 
-
-#define CHG_UP_PAGE_SIZE 128
-#define PARMS_LEN 10
-#define SEPRATOR_SIGN ","
-static char chg_up_buf[CHG_UP_PAGE_SIZE] = {0};
-int oplus_update_chg_up_limit_parms(struct oplus_chg_chip *chip, const char *buf)
-{
-	int ret = 0;
-	char temp_buf[CHG_UP_PAGE_SIZE] = {0};
-	char *buf_temp = temp_buf;
-	char *buf_to_int_begian = temp_buf;
-	int lenth_before = 0;
-	int lenth_after = 0;
-	char buf_atoi[CHG_UP_PAGE_SIZE] = {0};
-	int parms[PARMS_LEN] = {0};
-	int n = 0;
-	int substr_len = 0;
-
-	if (buf == NULL) {
-		chg_err("input buf is NULL\n");
-		return -ENOMEM;
-	}
-
-	chg_info("raw input buf: %s\n", buf);
-
-	if (strlen(buf) >= CHG_UP_PAGE_SIZE) {
-		chg_err("buf too long: %zu (max %d)\n", strlen(buf), CHG_UP_PAGE_SIZE);
-		return -EINVAL;
-	}
-
-	strlcpy(temp_buf, buf, sizeof(temp_buf));
-	strlcpy(chg_up_buf, buf, sizeof(chg_up_buf));
-
-	chg_err("copied temp_buf: %s\n", temp_buf);
-
-	while ((*buf_temp != '\0') && (n < PARMS_LEN)) {
-		buf_to_int_begian = buf_temp;
-		lenth_before = strlen(buf_temp);
-
-		buf_temp = strstr(buf_temp, SEPRATOR_SIGN); 
-
-		if (buf_temp == NULL) {
-			chg_err("last segment: %s\n", buf_to_int_begian);
-			if (kstrtos32(buf_to_int_begian, 0, &parms[n])) {
-				chg_err("kstrtos32 failed for final part: %s\n", buf_to_int_begian);
-			} else {
-				chg_err("parsed parms[%d] = %d\n", n, parms[n]);
-			}
-			break;
-		}
-
-		lenth_after = strlen(buf_temp + 1); 
-
-		if (lenth_before <= lenth_after + 1) {
-			chg_err("invalid split at n=%d: lenth_before=%d, lenth_after=%d\n",
-				n, lenth_before, lenth_after);
-			return -EINVAL;
-		}
-
-		substr_len = lenth_before - lenth_after - 1;
-		memset(buf_atoi, 0, sizeof(buf_atoi));
-		strncpy(buf_atoi, buf_to_int_begian, substr_len);
-		buf_atoi[substr_len] = '\0';  
-
-		chg_err("segment %d: \"%s\"\n", n, buf_atoi);
-
-		if (kstrtos32(buf_atoi, 0, &parms[n])) {
-			chg_err("kstrtos32 failed for segment[%d]: %s\n", n, buf_atoi);
-		} else {
-			chg_err("parsed parms[%d] = %d\n", n, parms[n]);
-		}
-
-		buf_temp += 1; 
-		n++;
-	}
-
-	chg_err("final parsed parms (%d): %d %d %d %d %d\n", n,
-		parms[0], parms[1], parms[2], parms[3], parms[4]);
-
-	ret = oplus_set_chg_up_limit(parms[0], parms[1], parms[2], parms[3], parms[4]);
-
-	return ret;
-}
-
 static enum oplus_chg_mod_property oplus_chg_comm_props[] = {
 	OPLUS_CHG_PROP_CHG_ENABLE,
 	OPLUS_CHG_PROP_SHIP_MODE,
 	OPLUS_CHG_PROP_SKIN_TEMP,
 	OPLUS_CHG_PROP_CALL_ON,
 	OPLUS_CHG_PROP_CAMERA_ON,
-	OPLUS_CHG_PROP_ADAPTER_POWER,
-	OPLUS_CHG_PROP_PROJECT_POWER,
-	OPLUS_CHG_PROP_DEVICE_POWER,
-	OPLUS_CHG_PROP_UI_POWER,
-	OPLUS_CHG_PROP_CPA_POWER,
-	OPLUS_CHG_PROP_PROTOCAL_TYPE,
 };
 
 static enum oplus_chg_mod_property oplus_chg_comm_uevent_props[] = {
@@ -775,33 +884,20 @@ static enum oplus_chg_mod_property oplus_chg_comm_uevent_props[] = {
 	OPLUS_CHG_PROP_SKIN_TEMP,
 };
 
-#ifdef OPLUS_CHG_DEBUG
 static struct oplus_chg_exten_prop oplus_chg_comm_exten_props[] = {
+#ifdef OPLUS_CHG_DEBUG
 	OPLUS_CHG_EXTEN_RWATTR(OPLUS_CHG_EXTERN_PROP_CHARGE_PARAMETER, oplus_chg_comm_charge_parameter),
-};
 #endif
+	OPLUS_CHG_EXTEN_RWATTR(OPLUS_CHG_EXTERN_PROP_MUTUAL_CMD, oplus_chg_comm_mutual_cmd),
+};
 
-#define UI_POWER_SHOW_LIMIT 33000
-int protocol_type_by_user = 0;
-int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
+static int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
 			enum oplus_chg_mod_property prop,
 			union oplus_chg_mod_propval *pval)
 {
 	struct oplus_chg_comm *comm_dev = oplus_chg_mod_get_drvdata(ocm);
 	struct oplus_chg_chip *chip = oplus_chg_get_chg_struct();
 	int rc = 0;
-	int adapter_power = 0;
-	int project_power = 0;
-	int ui_power = 0;
-	int cpa_power = 0;
-	int fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
-	static int last_fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
-	int subtype = CHARGER_SUBTYPE_DEFAULT;
-#ifndef CONFIG_CHG_FOR_OP9_CN
-	bool wls_online = false;
-#endif
-	bool vooc_online = false;
-	static int pre_fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
 
 	if (!chip) {
 		// pr_err("oplus chip is NULL\n");
@@ -821,117 +917,6 @@ int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
 	case OPLUS_CHG_PROP_CAMERA_ON:
 		pval->intval = camera_on_count;
 		break;
-	case OPLUS_CHG_PROP_ADAPTER_POWER:
-		pval->intval = oplus_get_adapter_power();
-		break;
-	case OPLUS_CHG_PROP_PROJECT_POWER:
-		pval->intval = oplus_get_project_power();
-		break;
-    case OPLUS_CHG_PROP_DEVICE_POWER:
-		pval->intval = oplus_get_project_power();
-		break;
-	case OPLUS_CHG_PROP_UI_POWER:
-		adapter_power = oplus_get_adapter_power();
-		project_power = oplus_get_project_power();
-		pval->intval = min(adapter_power, project_power);
-		ui_power = pval->intval;
-		if (ui_power < UI_POWER_SHOW_LIMIT || ui_power < project_power)
-			pval->intval = 0;
-		break;
-	case OPLUS_CHG_PROP_CPA_POWER:
-		adapter_power = oplus_get_adapter_power();
-		project_power = oplus_get_project_power();
-		pval->intval = min(adapter_power, project_power);
-		cpa_power = pval->intval;
-		if (cpa_power < 0)
-			pval->intval = 0;
-		break;
-	case OPLUS_CHG_PROP_PROTOCAL_TYPE:
-		chg_err("[PROTOCAL_TYPE] Enter\n");
-
-		if ((oplus_warp_get_fastchg_started() == true) ||
-			(oplus_warp_get_fastchg_to_normal() == true) ||
-			(oplus_warp_get_fastchg_to_warm() == true) ||
-			(oplus_warp_get_fastchg_dummy_started() == true)) {
-			vooc_online = true;
-			chg_err("[PROTOCAL_TYPE] VOOC online detected\n");
-		} else {
-			chg_err("[PROTOCAL_TYPE] VOOC not online\n");
-		}
-
-		subtype = oplus_warp_get_fast_chg_type();
-		chg_err("[PROTOCAL_TYPE] Detected fastchg subtype: %d\n", subtype);
-
-		if (vooc_online && subtype > 0 ) {
-			int adapter_type = oplus_get_warp_adapter_type(subtype);
-			chg_err("[PROTOCAL_TYPE] Adapter type: %d\n", adapter_type);
-
-			if (adapter_type == CHARGER_TYPE_SWARP) {
-				fast_chg_type = CHARGER_SUBTYPE_FASTCHG_SWARP;
-				chg_err("[PROTOCAL_TYPE] SWARP charger detected\n");
-			} else {
-				fast_chg_type = CHARGER_SUBTYPE_FASTCHG_WARP;
-				chg_err("[PROTOCAL_TYPE] WARP charger detected\n");
-			}
-
-			pre_fast_chg_type = fast_chg_type;
-			chg_err("[PROTOCAL_TYPE] pre_fast_chg_type set to: %d\n", pre_fast_chg_type);
-		} else {
-			fast_chg_type = subtype;
-			chg_err("[PROTOCAL_TYPE] Fallback fastchg type: %d\n", fast_chg_type);
-
-			if (subtype == CHARGER_SUBTYPE_PD) {
-				chg_err("[PROTOCAL_TYPE] Detected PD subtype\n");
-				if (!chip->pd_swarp) {
-					fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
-					chg_err("[PROTOCAL_TYPE] PD SWARP not supported, set default\n");
-				}
-			}
-		}
-
-		chg_err("[PROTOCAL_TYPE] Intermediate fast_chg_type: %d\n", fast_chg_type);
-#ifndef CONFIG_CHG_FOR_OP9_CN
-		wls_online = oplus_wpc_get_online_status() || oplus_chg_is_wls_present(chip);
-		chg_err("[PROTOCAL_TYPE] Wireless online status: %d\n", wls_online);
-
-		if (wls_online) {
-			if (is_wls_ocm_available(comm_dev)) {
-				chg_err("[PROTOCAL_TYPE] Wireless OCM available\n");
-				rc = oplus_chg_mod_get_property(comm_dev->wls_ocm,
-								OPLUS_CHG_PROP_WLS_TYPE, pval);
-				if (rc < 0) {
-					chg_err("[PROTOCAL_TYPE] Get wireless type failed, default fallback\n");
-					fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
-				} else {
-					chg_err("[PROTOCAL_TYPE] Wireless type intval: %d\n", pval->intval);
-					if (pval->intval == OPLUS_CHG_WLS_WARP) {
-						fast_chg_type = CHARGER_SUBTYPE_FASTCHG_WARP;
-						chg_err("[PROTOCAL_TYPE] Wireless WARP detected\n");
-					} else if (pval->intval == OPLUS_CHG_WLS_SWARP || pval->intval == OPLUS_CHG_WLS_PD_65W) {
-						fast_chg_type = CHARGER_SUBTYPE_FASTCHG_SWARP;
-						chg_err("[PROTOCAL_TYPE] Wireless SWARP or PD 65W detected\n");
-					} else {
-						fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
-						chg_err("[PROTOCAL_TYPE] Wireless type unknown, fallback to default\n");
-					}
-				}
-			} else {
-				chg_err("[PROTOCAL_TYPE] Wireless OCM not available\n");
-			}
-		}
-#endif
-		if (protocol_type_by_user > 0) {
-			chg_err("[PROTOCAL_TYPE] Override by user-defined protocol type: %d\n", protocol_type_by_user);
-			fast_chg_type = protocol_type_by_user;
-		}
-
-		last_fast_chg_type = fast_chg_type;
-		chg_err("[PROTOCAL_TYPE] Final fast_chg_type: %d\n", fast_chg_type);
-
-		pval->intval = fast_chg_type;
-		chg_err("[PROTOCAL_TYPE] Output intval set: %d\n", pval->intval);
-
-	    break;
 	default:
 		pr_err("get prop %d is not supported\n", prop);
 		return -EINVAL;
@@ -943,7 +928,7 @@ int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
 	return 0;
 }
 
-int oplus_chg_comm_set_prop(struct oplus_chg_mod *ocm,
+static int oplus_chg_comm_set_prop(struct oplus_chg_mod *ocm,
 			enum oplus_chg_mod_property prop,
 			const union oplus_chg_mod_propval *pval)
 {
@@ -1008,12 +993,7 @@ static int oplus_chg_comm_prop_is_writeable(struct oplus_chg_mod *ocm,
 	case OPLUS_CHG_PROP_CALL_ON:
 	case OPLUS_CHG_PROP_CAMERA_ON:
 	case OPLUS_CHG_EXTERN_PROP_CHARGE_PARAMETER:
-	case OPLUS_CHG_PROP_ADAPTER_POWER:
-	case OPLUS_CHG_PROP_PROJECT_POWER:
-	case OPLUS_CHG_PROP_DEVICE_POWER:
-	case OPLUS_CHG_PROP_UI_POWER:
-	case OPLUS_CHG_PROP_CPA_POWER:
-	case OPLUS_CHG_PROP_PROTOCAL_TYPE:
+	case OPLUS_CHG_EXTERN_PROP_MUTUAL_CMD:
 		return 1;
 	default:
 		break;
@@ -1029,13 +1009,8 @@ static const struct oplus_chg_mod_desc oplus_chg_comm_mod_desc = {
 	.num_properties = ARRAY_SIZE(oplus_chg_comm_props),
 	.uevent_properties = oplus_chg_comm_uevent_props,
 	.uevent_num_properties = ARRAY_SIZE(oplus_chg_comm_uevent_props),
-#ifdef OPLUS_CHG_DEBUG
 	.exten_properties = oplus_chg_comm_exten_props,
 	.num_exten_properties = ARRAY_SIZE(oplus_chg_comm_exten_props),
-#else
-	.exten_properties = NULL,
-	.num_exten_properties = 0,
-#endif
 	.get_property = oplus_chg_comm_get_prop,
 	.set_property = oplus_chg_comm_set_prop,
 	.property_is_writeable	= oplus_chg_comm_prop_is_writeable,
@@ -2500,6 +2475,8 @@ static int oplus_chg_comm_driver_probe(struct platform_device *pdev)
 		pr_err("oplus chg comm mod init error, rc=%d\n", rc);
 		goto comm_mod_init_err;
 	}
+
+	oplus_chg_comm_init_mutual(comm_dev);
 
 #ifdef CONFIG_OPLUS_CHG_OOS
 	if (comm_dev->lcd_panel) {

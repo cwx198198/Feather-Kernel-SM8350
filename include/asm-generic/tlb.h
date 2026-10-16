@@ -26,15 +26,6 @@
 # define nmi_uaccess_okay() true
 #endif
 
-/*
- * Blindly accessing user memory from NMI context can be dangerous
- * if we're in the middle of switching the current user task or switching
- * the loaded mm.
- */
-#ifndef nmi_uaccess_okay
-# define nmi_uaccess_okay() true
-#endif
-
 #ifdef CONFIG_MMU
 
 /*
@@ -556,6 +547,14 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
 		tlb_flush_pte_range(tlb, address, PAGE_SIZE);	\
 		__tlb_remove_tlb_entry(tlb, ptep, address);	\
 	} while (0)
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+#define tlb_remove_cont_pte_tlb_entry(tlb, ptep, address)		\
+		do {							\
+			tlb_flush_pte_range(tlb, address, HPAGE_CONT_PTE_SIZE); \
+			__tlb_remove_tlb_entry(tlb, ptep, address); \
+		} while (0)
+#endif
 
 #define tlb_remove_huge_tlb_entry(h, tlb, ptep, address)	\
 	do {							\

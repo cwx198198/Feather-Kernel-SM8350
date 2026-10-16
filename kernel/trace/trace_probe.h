@@ -252,21 +252,16 @@ struct event_file_link {
 	struct list_head		list;
 };
 
-static inline unsigned int trace_probe_load_flag(struct trace_probe *tp)
-{
-	return smp_load_acquire(&tp->event->flags);
-}
-
 static inline bool trace_probe_test_flag(struct trace_probe *tp,
 					 unsigned int flag)
 {
-	return !!(trace_probe_load_flag(tp) & flag);
+	return !!(tp->event->flags & flag);
 }
 
 static inline void trace_probe_set_flag(struct trace_probe *tp,
 					unsigned int flag)
 {
-	smp_store_release(&tp->event->flags, tp->event->flags | flag);
+	tp->event->flags |= flag;
 }
 
 static inline void trace_probe_clear_flag(struct trace_probe *tp,
@@ -408,7 +403,6 @@ extern int traceprobe_define_arg_fields(struct trace_event_call *event_call,
 	C(BAD_MAXACT,		"Invalid maxactive number"),		\
 	C(MAXACT_TOO_BIG,	"Maxactive is too big"),		\
 	C(BAD_PROBE_ADDR,	"Invalid probed address or symbol"),	\
-	C(NON_UNIQ_SYMBOL,	"The symbol is not unique"),		\
 	C(BAD_RETPROBE,		"Retprobe address must be an function entry"), \
 	C(NO_GROUP_NAME,	"Group name is not specified"),		\
 	C(GROUP_TOO_LONG,	"Group name is too long"),		\

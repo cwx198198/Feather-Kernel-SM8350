@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -1175,6 +1175,7 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 	int rc = 0x1, ret;
 	u32 mask;
 	int te_rechecks = 1;
+	char task_com[TASK_COMM_LEN];
 
 	if (!dsi_display || !dsi_display->panel)
 		return -EINVAL;
@@ -1193,8 +1194,16 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 		goto release_panel_lock;
 
 #ifdef OPLUS_BUG_STABILITY
-	if (atomic_read(&panel->esd_pending)) {
-		DSI_WARN("Skip the check because esd is pending\n");
+	get_task_comm(task_com, get_current());
+	if(!strncmp(task_com, "kworker", 7))
+	{
+		if (atomic_read(&panel->esd_pending)) {
+			DSI_WARN("Skip the check because esd is pending\n");
+			goto release_panel_lock;
+		}
+	}
+	if (panel->power_mode != SDE_MODE_DPMS_ON) {
+		DSI_WARN("Skip the check because panel power mode not power on!\n");
 		goto release_panel_lock;
 	}
 #endif /* OPLUS_BUG_STABILITY */
@@ -2418,7 +2427,7 @@ static void adjust_timing_by_ctrl_count(const struct dsi_display *display,
 		mode->timing.h_skew /= sublinks_count;
 		mode->pixel_clk_khz /= sublinks_count;
 	} else {
-		if ((mode->priv_info) && (mode->priv_info->dsc_enabled))
+		if (mode->priv_info->dsc_enabled)
 			mode->priv_info->dsc.config.pic_width =
 				mode->timing.h_active;
 		mode->timing.h_active /= display->ctrl_count;
@@ -3082,7 +3091,7 @@ error:
 	return rc;
 }
 
-#if defined(CONFIG_DEEPSLEEP) || defined(CONFIG_HIBERNATION)
+#ifdef CONFIG_DEEPSLEEP
 int dsi_display_unset_clk_src(struct dsi_display *display)
 {
 	int rc = 0;
@@ -3936,12 +3945,6 @@ static int dsi_display_clocks_init(struct dsi_display *display)
 		dsi_clock_name = "qcom,dsi-select-sec-clocks";
 
 	num_clk = dsi_display_get_clocks_count(display, dsi_clock_name);
-
-	if (num_clk <= 0) {
-		rc = num_clk;
-		DSI_WARN("failed to read %s, rc = %d\n", dsi_clock_name, num_clk);
-		goto error;
-	}
 
 	DSI_DEBUG("clk count=%d\n", num_clk);
 
@@ -6396,7 +6399,7 @@ static int dsi_display_init(struct dsi_display *display)
 		if (rc) {
 			DSI_ERR("[%s] failed to enable vregs, rc=%d\n",
 					display->panel->name, rc);
-			goto vreg_fail;
+			return rc;
 		}
 #ifdef OPLUS_BUG_STABILITY
 		if (display->panel->oplus_priv.cabc_enabled) {
@@ -6406,20 +6409,10 @@ static int dsi_display_init(struct dsi_display *display)
 	}
 
 	rc = component_add(&pdev->dev, &dsi_display_comp_ops);
-	if (rc) {
+	if (rc)
 		DSI_ERR("component add failed, rc=%d\n", rc);
-		goto comp_add_fail;
-	}
 
 	DSI_DEBUG("component add success: %s\n", display->name);
-	return rc;
-
-comp_add_fail:
-	if (display->panel)
-		dsi_pwr_enable_regulator(&display->panel->power_info, false);
-vreg_fail:
-	_dsi_display_dev_deinit(display);
-
 end:
 	return rc;
 }
@@ -6867,9 +6860,6 @@ static int dsi_display_ext_get_info(struct drm_connector *connector,
 		return -EINVAL;
 	}
 
-	if (display->panel->num_timing_nodes)
-		return dsi_display_get_info(connector, info, disp);
-
 	mutex_lock(&display->display_lock);
 
 	memset(info, 0, sizeof(struct msm_display_info));
@@ -6900,26 +6890,22 @@ static int dsi_display_ext_get_mode_info(struct drm_connector *connector,
 	void *display, const struct msm_resource_caps_info *avail_res)
 {
 	struct msm_display_topology *topology;
-	struct dsi_display *ext_display = (struct dsi_display *)display;
 
 	if (!drm_mode || !mode_info ||
 			!avail_res || !avail_res->max_mixer_width)
 		return -EINVAL;
 
-	if (ext_display->panel->num_timing_nodes)
-		return dsi_conn_get_mode_info(connector, drm_mode,
-			mode_info, display, avail_res);
-
 	memset(mode_info, 0, sizeof(*mode_info));
 	mode_info->frame_rate = drm_mode->vrefresh;
 	mode_info->vtotal = drm_mode->vtotal;
-	mode_info->comp_info.comp_type = MSM_DISPLAY_COMPRESSION_NONE;
 
 	topology = &mode_info->topology;
-	topology->num_lm = ext_display->ctrl_count;
-
+	topology->num_lm = (avail_res->max_mixer_width
+			<= drm_mode->hdisplay) ? 2 : 1;
 	topology->num_enc = 0;
 	topology->num_intf = topology->num_lm;
+
+	mode_info->comp_info.comp_type = MSM_DISPLAY_COMPRESSION_NONE;
 
 	return 0;
 }
@@ -7321,6 +7307,7 @@ int dsi_display_get_info(struct drm_connector *connector,
 
 	info->dsc_count = display->panel->dsc_count;
 	info->lm_count = display->panel->lm_count;
+	info->switch_vsync_delay = display->panel->switch_vsync_delay;
 error:
 	mutex_unlock(&display->display_lock);
 	return rc;
@@ -7567,6 +7554,13 @@ int dsi_display_get_modes(struct dsi_display *display,
 			goto error;
 		}
 
+#ifdef OPLUS_BUG_STABILITY
+		if (display_mode.vsync_source < 0 || display_mode.vsync_source > 15) {
+			DSI_ERR("[%s] vsync source invalid, use default source %d\n",
+				display->name, display->te_source);
+			display_mode.vsync_source = display->te_source;
+		}
+#endif
 		/*
 		 * Update the host_config.dst_format for compressed RGB101010
 		 * pixel format.
@@ -7581,13 +7575,6 @@ int dsi_display_get_modes(struct dsi_display *display,
 				display->panel->host_config.dst_format);
 		}
 
-#ifdef OPLUS_BUG_STABILITY
-		if (display_mode.vsync_source < 0 || display_mode.vsync_source > 15) {
-			DSI_ERR("[%s] vsync source invalid, use default source %d\n",
-				display->name, display->te_source);
-			display_mode.vsync_source = display->te_source;
-		}
-#endif
 		is_cmd_mode = (display_mode.panel_mode == DSI_OP_CMD_MODE);
 
 		/* Setup widebus support */
@@ -7679,10 +7666,8 @@ exit:
 	rc = 0;
 
 error:
-	if (rc) {
+	if (rc)
 		kfree(display->modes);
-		display->modes = NULL;
-	}
 
 	mutex_unlock(&display->display_lock);
 	return rc;
@@ -8764,7 +8749,8 @@ static int dsi_display_set_roi(struct dsi_display *display,
 
 int dsi_display_pre_kickoff(struct drm_connector *connector,
 		struct dsi_display *display,
-		struct msm_display_kickoff_params *params)
+		struct msm_display_kickoff_params *params,
+		bool force_update_dsi_clocks)
 {
 	int rc = 0, ret = 0;
 	int i;
@@ -8774,7 +8760,7 @@ int dsi_display_pre_kickoff(struct drm_connector *connector,
 		_dsi_display_setup_misr(display);
 
 	/* dynamic DSI clock setting */
-	if (atomic_read(&display->clkrate_change_pending)) {
+	if (atomic_read(&display->clkrate_change_pending) && force_update_dsi_clocks) {
 		mutex_lock(&display->display_lock);
 		/*
 		 * acquire panel_lock to make sure no commands are in progress
@@ -8800,6 +8786,7 @@ int dsi_display_pre_kickoff(struct drm_connector *connector,
 		 * Don't check the return value so as not to impact DRM commit
 		 * when error occurs.
 		 */
+		SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
 		(void)dsi_display_force_update_dsi_clk(display);
 wait_failure:
 		/* release panel_lock */

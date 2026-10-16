@@ -50,7 +50,7 @@
 
 #include <linux/module.h>
 #include <linux/proc_fs.h>
-#include <soc/oplus/oplus_project.h>
+#include <soc/oppo/oppo_project.h>
 #include <linux/slab.h>
 #include <linux/seq_file.h>
 #include <linux/fs.h>

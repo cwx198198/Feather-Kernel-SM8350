@@ -89,11 +89,8 @@ int mdiobus_register_device(struct mdio_device *mdiodev)
 			return err;
 
 		err = mdiobus_register_reset(mdiodev);
-		if (err) {
-			gpiod_put(mdiodev->reset_gpio);
-			mdiodev->reset_gpio = NULL;
+		if (err)
 			return err;
-		}
 
 		/* Assert the reset signal */
 		mdio_device_reset(mdiodev, 1);
@@ -568,13 +565,7 @@ int __mdiobus_read(struct mii_bus *bus, int addr, u32 regnum)
 
 	WARN_ON_ONCE(!mutex_is_locked(&bus->mdio_lock));
 
-	if (addr >= PHY_MAX_ADDR)
-		return -ENXIO;
-
-	if (bus->read)
-		retval = bus->read(bus, addr, regnum);
-	else
-		retval = -EOPNOTSUPP;
+	retval = bus->read(bus, addr, regnum);
 
 	trace_mdio_access(bus, 1, addr, regnum, retval, retval);
 
@@ -599,13 +590,7 @@ int __mdiobus_write(struct mii_bus *bus, int addr, u32 regnum, u16 val)
 
 	WARN_ON_ONCE(!mutex_is_locked(&bus->mdio_lock));
 
-	if (addr >= PHY_MAX_ADDR)
-		return -ENXIO;
-
-	if (bus->write)
-		err = bus->write(bus, addr, regnum, val);
-	else
-		err = -EOPNOTSUPP;
+	err = bus->write(bus, addr, regnum, val);
 
 	trace_mdio_access(bus, 0, addr, regnum, val, err);
 

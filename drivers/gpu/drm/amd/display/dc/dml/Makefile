@@ -24,8 +24,7 @@
 # It provides the general basic services required by other DAL
 # subcomponents.
 
-dml_ccflags-$(CONFIG_CC_IS_GCC) := -mhard-float
-dml_ccflags := $(dml_ccflags-y) -msse
+dml_ccflags := -mhard-float -msse
 
 ifdef CONFIG_CC_IS_GCC
 ifeq ($(call cc-ifversion, -lt, 0701, y), y)

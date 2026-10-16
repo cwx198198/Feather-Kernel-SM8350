@@ -203,12 +203,11 @@ void nf_logger_put(int pf, enum nf_log_type type)
 		return;
 	}
 
+	BUG_ON(loggers[pf][type] == NULL);
+
 	rcu_read_lock();
 	logger = rcu_dereference(loggers[pf][type]);
-	if (!logger)
-		WARN_ON_ONCE(1);
-	else
-		module_put(logger->me);
+	module_put(logger->me);
 	rcu_read_unlock();
 }
 EXPORT_SYMBOL_GPL(nf_logger_put);
@@ -415,7 +414,7 @@ static struct ctl_table nf_log_sysctl_ftable[] = {
 };
 
 static int nf_log_proc_dostring(struct ctl_table *table, int write,
-			 void *buffer, size_t *lenp, loff_t *ppos)
+			 void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	const struct nf_logger *logger;
 	char buf[NFLOGGER_NAME_LEN];

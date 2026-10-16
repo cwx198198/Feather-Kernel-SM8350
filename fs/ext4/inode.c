@@ -151,7 +151,7 @@ static int ext4_meta_trans_blocks(struct inode *inode, int lblocks,
  */
 int ext4_inode_is_fast_symlink(struct inode *inode)
 {
-	if (!ext4_has_feature_ea_inode(inode->i_sb)) {
+	if (!(EXT4_I(inode)->i_flags & EXT4_EA_INODE_FL)) {
 		int ea_blocks = EXT4_I(inode)->i_file_acl ?
 				EXT4_CLUSTER_SIZE(inode->i_sb) >> 9 : 0;
 
@@ -3827,6 +3827,14 @@ static ssize_t ext4_direct_IO_write(struct kiocb *iocb, struct iov_iter *iter)
 		get_block_func = ext4_dio_get_block_unwritten_async;
 		dio_flags = DIO_LOCKING;
 	}
+
+#ifdef OPLUS_FEATURE_UFSPLUS
+#ifdef CONFIG_FS_HPB
+	if (ext4_test_inode_state(inode, EXT4_STATE_HPB))
+		dio_flags |= DIO_HPB_IO;
+#endif
+#endif /* OPLUS_FEATURE_UFSPLUS */
+
 	ret = __blockdev_direct_IO(iocb, inode, inode->i_sb->s_bdev, iter,
 				   get_block_func, ext4_end_io_dio, NULL,
 				   dio_flags);
@@ -3909,6 +3917,11 @@ static ssize_t ext4_direct_IO_read(struct kiocb *iocb, struct iov_iter *iter)
 	struct inode *inode = mapping->host;
 	size_t count = iov_iter_count(iter);
 	ssize_t ret;
+#ifdef OPLUS_FEATURE_UFSPLUS
+#ifdef CONFIG_FS_HPB
+	int dio_flags = 0;
+#endif
+#endif /* OPLUS_FEATURE_UFSPLUS */
 	loff_t offset = iocb->ki_pos;
 	loff_t size = i_size_read(inode);
 
@@ -3931,8 +3944,18 @@ static ssize_t ext4_direct_IO_read(struct kiocb *iocb, struct iov_iter *iter)
 					   iocb->ki_pos + count - 1);
 	if (ret)
 		goto out_unlock;
+
+#if defined(OPLUS_FEATURE_UFSPLUS) && defined(CONFIG_FS_HPB)
+	if (ext4_test_inode_state(inode, EXT4_STATE_HPB))
+		dio_flags |= DIO_HPB_IO;
+  
+	ret = __blockdev_direct_IO(iocb, inode, inode->i_sb->s_bdev,
+				   iter, ext4_dio_get_block, NULL, NULL,
+				   dio_flags);
+#else
 	ret = __blockdev_direct_IO(iocb, inode, inode->i_sb->s_bdev,
 				   iter, ext4_dio_get_block, NULL, NULL, 0);
+#endif
 out_unlock:
 	inode_unlock_shared(inode);
 	return ret;
@@ -4301,11 +4324,7 @@ int ext4_can_truncate(struct inode *inode)
  * We have to make sure i_disksize gets properly updated before we truncate
  * page cache due to hole punching or zero range. Otherwise i_disksize update
  * can get lost as it may have been postponed to submission of writeback but
- * that will never happen if we remove the folio containing i_size from the
- * page cache. Also if we punch hole within i_size but above i_disksize,
- * following ext4_page_mkwrite() may mistakenly allocate written blocks over
- * the hole and thus introduce allocated blocks beyond i_disksize which is
- * not allowed (e2fsck would complain in case of crash).
+ * that will never happen after we truncate page cache.
  */
 int ext4_update_disksize_before_punch(struct inode *inode, loff_t offset,
 				      loff_t len)
@@ -4314,11 +4333,9 @@ int ext4_update_disksize_before_punch(struct inode *inode, loff_t offset,
 	loff_t size = i_size_read(inode);
 
 	WARN_ON(!inode_is_locked(inode));
-	if (offset > size)
+	if (offset > size || offset + len < size)
 		return 0;
 
-	if (offset + len < size)
-		size = offset + len;
 	if (EXT4_I(inode)->i_disksize >= size)
 		return 0;
 
@@ -4953,43 +4970,22 @@ static inline u64 ext4_inode_peek_iversion(const struct inode *inode)
 		return inode_peek_iversion(inode);
 }
 
-static int check_igot_inode(struct inode *inode, ext4_iget_flags flags,
-			    const char *function, unsigned int line)
+static const char *check_igot_inode(struct inode *inode, ext4_iget_flags flags)
+
 {
-	const char *err_str;
-
 	if (flags & EXT4_IGET_EA_INODE) {
-		if (!(EXT4_I(inode)->i_flags & EXT4_EA_INODE_FL)) {
-			err_str = "missing EA_INODE flag";
-			goto error;
-		}
+		if (!(EXT4_I(inode)->i_flags & EXT4_EA_INODE_FL))
+			return "missing EA_INODE flag";
 		if (ext4_test_inode_state(inode, EXT4_STATE_XATTR) ||
-		    EXT4_I(inode)->i_file_acl) {
-			err_str = "ea_inode with extended attributes";
-			goto error;
-		}
+		    EXT4_I(inode)->i_file_acl)
+			return "ea_inode with extended attributes";
 	} else {
-		if ((EXT4_I(inode)->i_flags & EXT4_EA_INODE_FL)) {
-			/*
-			 * open_by_handle_at() could provide an old inode number
-			 * that has since been reused for an ea_inode; this does
-			 * not indicate filesystem corruption
-			 */
-			if (flags & EXT4_IGET_HANDLE)
-				return -ESTALE;
-			err_str = "unexpected EA_INODE flag";
-			goto error;
-		}
+		if ((EXT4_I(inode)->i_flags & EXT4_EA_INODE_FL))
+			return "unexpected EA_INODE flag";
 	}
-	if (is_bad_inode(inode) && !(flags & EXT4_IGET_BAD)) {
-		err_str = "unexpected bad inode w/o EXT4_IGET_BAD";
-		goto error;
-	}
-	return 0;
-
-error:
-	ext4_error_inode(inode, function, line, 0, err_str);
-	return -EFSCORRUPTED;
+	if (is_bad_inode(inode) && !(flags & EXT4_IGET_BAD))
+		return "unexpected bad inode w/o EXT4_IGET_BAD";
+	return NULL;
 }
 
 struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
@@ -5000,6 +4996,7 @@ struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 	struct ext4_inode *raw_inode;
 	struct ext4_inode_info *ei;
 	struct inode *inode;
+	const char *err_str;
 	journal_t *journal = EXT4_SB(sb)->s_journal;
 	long ret;
 	loff_t size;
@@ -5024,10 +5021,10 @@ struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 	if (!(inode->i_state & I_NEW)) {
-		ret = check_igot_inode(inode, flags, function, line);
-		if (ret) {
+		if ((err_str = check_igot_inode(inode, flags)) != NULL) {
+			ext4_error_inode(inode, function, line, 0, err_str);
 			iput(inode);
-			return ERR_PTR(ret);
+			return ERR_PTR(-EFSCORRUPTED);
 		}
 		return inode;
 	}
@@ -5131,14 +5128,6 @@ struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 	}
 	ei->i_flags = le32_to_cpu(raw_inode->i_flags);
 	ext4_set_inode_flags(inode);
-	/* Detect invalid flag combination - can't have both inline data and extents */
-	if (ext4_test_inode_flag(inode, EXT4_INODE_INLINE_DATA) &&
-	    ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)) {
-		ext4_error_inode(inode, function, line, 0,
-			"inode has both inline data and extents flags");
-		ret = -EFSCORRUPTED;
-		goto bad_inode;
-	}
 	inode->i_blocks = ext4_inode_blocks(raw_inode, ei);
 	ei->i_file_acl = le32_to_cpu(raw_inode->i_file_acl_lo);
 	if (ext4_has_feature_64bit(sb))
@@ -5300,27 +5289,16 @@ struct inode *__ext4_iget(struct super_block *sb, unsigned long ino,
 				 "iget: bogus i_mode (%o)", inode->i_mode);
 		goto bad_inode;
 	}
-	if (IS_CASEFOLDED(inode) && !ext4_has_feature_casefold(inode->i_sb)) {
+	if (IS_CASEFOLDED(inode) && !ext4_has_feature_casefold(inode->i_sb))
 		ext4_error_inode(inode, function, line, 0,
 				 "casefold flag without casefold feature");
+	if ((err_str = check_igot_inode(inode, flags)) != NULL) {
+		ext4_error_inode(inode, function, line, 0, err_str);
 		ret = -EFSCORRUPTED;
 		goto bad_inode;
 	}
-	ret = check_igot_inode(inode, flags, function, line);
-	/*
-	 * -ESTALE here means there is nothing inherently wrong with the inode,
-	 * it's just not an inode we can return for an fhandle lookup.
-	 */
-	if (ret == -ESTALE) {
-		brelse(iloc.bh);
-		unlock_new_inode(inode);
-		iput(inode);
-		return ERR_PTR(-ESTALE);
-	}
-	if (ret)
-		goto bad_inode;
-	brelse(iloc.bh);
 
+	brelse(iloc.bh);
 	unlock_new_inode(inode);
 	return inode;
 
@@ -5674,9 +5652,8 @@ static void ext4_wait_for_tail_page_commit(struct inode *inode)
 	struct page *page;
 	unsigned offset;
 	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
-	tid_t commit_tid;
+	tid_t commit_tid = 0;
 	int ret;
-	bool has_transaction;
 
 	offset = inode->i_size & (PAGE_SIZE - 1);
 	/*
@@ -5701,14 +5678,12 @@ static void ext4_wait_for_tail_page_commit(struct inode *inode)
 		put_page(page);
 		if (ret != -EBUSY)
 			return;
-		has_transaction = false;
+		commit_tid = 0;
 		read_lock(&journal->j_state_lock);
-		if (journal->j_committing_transaction) {
+		if (journal->j_committing_transaction)
 			commit_tid = journal->j_committing_transaction->t_tid;
-			has_transaction = true;
-		}
 		read_unlock(&journal->j_state_lock);
-		if (has_transaction)
+		if (commit_tid)
 			jbd2_log_wait_commit(journal, commit_tid);
 	}
 }
@@ -5922,8 +5897,17 @@ out_mmap_sem:
 	if (orphan && inode->i_nlink)
 		ext4_orphan_del(NULL, inode);
 
-	if (!error && (ia_valid & ATTR_MODE))
+	if (!error && (ia_valid & ATTR_MODE)) {
 		rc = posix_acl_chmod(inode, inode->i_mode);
+#ifdef OPLUS_FEATURE_UFSPLUS
+#ifdef CONFIG_FS_HPB
+		if (__is_hpb_file(dentry->d_name.name, inode))
+			ext4_set_inode_state(inode, EXT4_STATE_HPB);
+		else
+			ext4_clear_inode_state(inode, EXT4_STATE_HPB);
+#endif
+#endif /* OPLUS_FEATURE_UFSPLUS */
+	}
 
 err_out:
 	ext4_std_error(inode->i_sb, error);

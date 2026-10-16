@@ -770,6 +770,9 @@ static int ncsi_gma_handler(struct ncsi_cmd_arg *nca, unsigned int mf_id)
 		return -1;
 	}
 
+	/* Set the flag for GMA command which should only be called once */
+	nca->ndp->gma_flag = 1;
+
 	/* Get Mac address from NCSI device */
 	return nch->handler(nca);
 }
@@ -1295,12 +1298,6 @@ static void ncsi_probe_channel(struct ncsi_dev_priv *ndp)
 		nd->state = ncsi_dev_state_probe_package;
 		break;
 	case ncsi_dev_state_probe_package:
-		if (ndp->package_probe_id >= 8) {
-			/* Last package probed, finishing */
-			ndp->flags |= NCSI_DEV_PROBED;
-			break;
-		}
-
 		ndp->pending_req_num = 1;
 
 		nca.type = NCSI_PKT_CMD_SP;
@@ -1379,8 +1376,13 @@ static void ncsi_probe_channel(struct ncsi_dev_priv *ndp)
 		if (ret)
 			goto error;
 
-		/* Probe next package after receiving response */
+		/* Probe next package */
 		ndp->package_probe_id++;
+		if (ndp->package_probe_id >= 8) {
+			/* Probe finished */
+			ndp->flags |= NCSI_DEV_PROBED;
+			break;
+		}
 		nd->state = ncsi_dev_state_probe_package;
 		ndp->active_package = NULL;
 		break;

@@ -46,7 +46,9 @@ nfp_map_ptr_record(struct nfp_app_bpf *bpf, struct nfp_prog *nfp_prog,
 	/* Grab a single ref to the map for our record.  The prog destroy ndo
 	 * happens after free_used_maps().
 	 */
-	bpf_map_inc(map);
+	map = bpf_map_inc(map, false);
+	if (IS_ERR(map))
+		return PTR_ERR(map);
 
 	record = kmalloc(sizeof(*record), GFP_KERNEL);
 	if (!record) {
@@ -111,9 +113,7 @@ static int
 nfp_map_ptrs_record(struct nfp_app_bpf *bpf, struct nfp_prog *nfp_prog,
 		    struct bpf_prog *prog)
 {
-	int i, cnt, err = 0;
-
-	mutex_lock(&prog->aux->used_maps_mutex);
+	int i, cnt, err;
 
 	/* Quickly count the maps we will have to remember */
 	cnt = 0;
@@ -121,15 +121,13 @@ nfp_map_ptrs_record(struct nfp_app_bpf *bpf, struct nfp_prog *nfp_prog,
 		if (bpf_map_offload_neutral(prog->aux->used_maps[i]))
 			cnt++;
 	if (!cnt)
-		goto out;
+		return 0;
 
 	nfp_prog->map_records = kmalloc_array(cnt,
 					      sizeof(nfp_prog->map_records[0]),
 					      GFP_KERNEL);
-	if (!nfp_prog->map_records) {
-		err = -ENOMEM;
-		goto out;
-	}
+	if (!nfp_prog->map_records)
+		return -ENOMEM;
 
 	for (i = 0; i < prog->aux->used_map_cnt; i++)
 		if (bpf_map_offload_neutral(prog->aux->used_maps[i])) {
@@ -137,14 +135,12 @@ nfp_map_ptrs_record(struct nfp_app_bpf *bpf, struct nfp_prog *nfp_prog,
 						 prog->aux->used_maps[i]);
 			if (err) {
 				nfp_map_ptrs_forget(bpf, nfp_prog);
-				goto out;
+				return err;
 			}
 		}
 	WARN_ON(cnt != nfp_prog->map_records_cnt);
 
-out:
-	mutex_unlock(&prog->aux->used_maps_mutex);
-	return err;
+	return 0;
 }
 
 static int
@@ -458,8 +454,7 @@ int nfp_bpf_event_output(struct nfp_app_bpf *bpf, const void *data,
 	map_id_full = be64_to_cpu(cbe->map_ptr);
 	map_id = map_id_full;
 
-	if (size_add(pkt_size, data_size) > INT_MAX ||
-	    len < sizeof(struct cmsg_bpf_event) + pkt_size + data_size)
+	if (len < sizeof(struct cmsg_bpf_event) + pkt_size + data_size)
 		return -EINVAL;
 	if (cbe->hdr.ver != NFP_CCM_ABI_VERSION)
 		return -EINVAL;

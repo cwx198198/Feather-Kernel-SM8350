@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/slab.h>
@@ -155,10 +154,6 @@ static int cam_ife_mgr_handle_reg_dump(struct cam_ife_hw_mgr_ctx *ctx,
 			"Reg dump values might be from more than one request");
 
 	for (i = 0; i < num_reg_dump_buf; i++) {
-		rc = cam_packet_util_validate_cmd_desc(&reg_dump_buf_desc[i]);
-		if (rc)
-			return rc;
-
 		CAM_DBG(CAM_ISP, "Reg dump cmd meta data: %u req_type: %u",
 			reg_dump_buf_desc[i].meta_data, meta_type);
 		if (reg_dump_buf_desc[i].meta_data == meta_type) {
@@ -2229,11 +2224,6 @@ static int cam_ife_hw_mgr_acquire_res_ife_csid_rdi(
 		csid_acquire.drop_enable = true;
 		csid_acquire.crop_enable = true;
 
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-		//lanhe add
-		csid_acquire.use_rdi_sof = ife_ctx->use_rdi_sof;
-#endif
-
 		if (in_port->usage_type)
 			csid_acquire.sync_mode = CAM_ISP_HW_SYNC_MASTER;
 		else
@@ -3162,10 +3152,6 @@ static int cam_ife_mgr_acquire_hw(void *hw_mgr_priv, void *acquire_hw_args)
 
 	ife_ctx->hw_mgr = ife_hw_mgr;
 	ife_ctx->cdm_ops =  cam_cdm_publish_ops();
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-    //lanhe add
-    ife_ctx->use_rdi_sof = acquire_args->use_rdi_sof;
-#endif
 
 	acquire_hw_info =
 		(struct cam_isp_acquire_hw_info *)acquire_args->acquire_info;
@@ -3591,6 +3577,7 @@ static int cam_ife_mgr_acquire_dev(void *hw_mgr_priv, void *acquire_hw_args)
 	acquire_args->ctxt_to_hw_map = ife_ctx;
 	ife_ctx->ctx_in_use = 1;
 	ife_ctx->num_reg_dump_buf = 0;
+	ife_ctx->is_anchor_instance = true;
 
 	cam_ife_hw_mgr_print_acquire_info(ife_ctx, total_pix_port,
 		total_pd_port, total_rdi_port, rc);
@@ -3962,7 +3949,7 @@ static int cam_ife_mgr_config_hw(void *hw_mgr_priv,
 	if (cfg->reapply && cfg->cdm_reset_before_apply) {
 		if (ctx->last_cdm_done_req < cfg->request_id) {
 			cdm_hang_detect =
-				cam_cdm_detect_hang_error(ctx->cdm_handle);
+				cam_cdm_detect_hang_error(ctx->cdm_handle, CAM_ISP);
 			CAM_ERR_RATE_LIMIT(CAM_ISP,
 				"CDM callback not received for req: %lld, last_cdm_done_req: %lld, cdm_hang_detect: %d",
 				cfg->request_id, ctx->last_cdm_done_req,
@@ -4066,19 +4053,25 @@ static int cam_ife_mgr_config_hw(void *hw_mgr_priv,
 			(ctx->custom_config & CAM_IFE_CUSTOM_CFG_SW_SYNC_ON)) {
 			rem_jiffies = wait_for_completion_timeout(
 				&ctx->config_done_complete,
-				msecs_to_jiffies(60));
+				msecs_to_jiffies(90));
 			if (rem_jiffies == 0) {
 				CAM_ERR(CAM_ISP,
 					"config done completion timeout for req_id=%llu ctx_index %d",
 					cfg->request_id, ctx->ctx_index);
-				if (cam_cdm_detect_hang_error(ctx->cdm_handle))
+				rc = cam_cdm_detect_hang_error(ctx->cdm_handle, CAM_ISP);
+				if (rc < 0) {
 					cam_cdm_dump_debug_registers(
 						ctx->cdm_handle);
-				rc = -ETIMEDOUT;
-			} else
+					rc = -ETIMEDOUT;
+				} else {
+					CAM_DBG(CAM_ISP,
+						"Wq delayed but IRQ CDM done");
+				}
+			} else {
 				CAM_DBG(CAM_ISP,
 					"config done Success for req_id=%llu ctx_index %d",
 					cfg->request_id, ctx->ctx_index);
+			}
 		}
 	} else {
 		CAM_ERR(CAM_ISP, "No commands to config");
@@ -4862,6 +4855,7 @@ static int cam_ife_mgr_release_hw(void *hw_mgr_priv,
 	ctx->is_offline = false;
 	ctx->pf_mid_found = false;
 	ctx->last_cdm_done_req = 0;
+	ctx->is_anchor_instance = 1;
 	atomic_set(&ctx->overflow_pending, 0);
 	for (i = 0; i < CAM_IFE_HW_NUM_MAX; i++) {
 		ctx->sof_cnt[i] = 0;
@@ -5626,6 +5620,23 @@ end:
 	return rc;
 }
 
+static int cam_isp_blob_anchor_config(
+	struct cam_isp_anchor_config        *anchor_config,
+	struct cam_hw_prepare_update_args   *prepare)
+{
+	int                                 rc = 0;
+	struct cam_ife_hw_mgr_ctx          *ctx = NULL;
+
+	ctx = prepare->ctxt_to_hw_map;
+
+	ctx->is_anchor_instance = anchor_config->anchor_instance;
+
+	CAM_INFO(CAM_ISP, "ctx is anchor instance %d",
+		ctx->is_anchor_instance);
+
+	return rc;
+}
+
 static int cam_isp_blob_sensor_config(
 	uint32_t                               blob_type,
 	struct cam_isp_generic_blob_info      *blob_info,
@@ -6002,9 +6013,7 @@ static int cam_isp_packet_generic_blob_handler(void *user_data,
 		break;
 	case CAM_ISP_GENERIC_BLOB_TYPE_BW_CONFIG: {
 		struct cam_isp_bw_config    *bw_config;
-		struct cam_isp_bw_config    *bw_config_u;
 		struct cam_isp_prepare_hw_update_data   *prepare_hw_data;
-		size_t bw_config_size;
 
 		CAM_WARN_RATE_LIMIT_CUSTOM(CAM_PERF, 300, 1,
 			"Deprecated Blob TYPE_BW_CONFIG");
@@ -6013,24 +6022,10 @@ static int cam_isp_packet_generic_blob_handler(void *user_data,
 			return -EINVAL;
 		}
 
-		bw_config_u = (struct cam_isp_bw_config *)blob_data;
+		bw_config = (struct cam_isp_bw_config *)blob_data;
 
-		if (bw_config_u->num_rdi > CAM_IFE_RDI_NUM_MAX || !bw_config_u->num_rdi) {
-			CAM_ERR(CAM_ISP, "Invalid num_rdi %u in bw config, ctx_idx: %u",
-				bw_config_u->num_rdi, ife_mgr_ctx->ctx_index);
-			return -EINVAL;
-		}
-
-		bw_config_size = sizeof(struct cam_isp_bw_config) + ((bw_config_u->num_rdi-1)*
-					sizeof(struct cam_isp_bw_vote));
-
-		rc = cam_common_mem_kdup((void **)&bw_config, bw_config_u, bw_config_size);
-		if (rc) {
-			CAM_ERR(CAM_ISP, "Alloc and copy request bw_config failed");
-			return rc;
-		}
-		if (bw_config_u->num_rdi != bw_config->num_rdi) {
-			CAM_ERR(CAM_ISP, "num_rdi changed,userspace:%d, kernel:%d", bw_config_u->num_rdi,
+		if (bw_config->num_rdi > CAM_IFE_RDI_NUM_MAX) {
+			CAM_ERR(CAM_ISP, "Invalid num_rdi %u in bw config",
 				bw_config->num_rdi);
 			return -EINVAL;
 		}
@@ -6078,7 +6073,6 @@ static int cam_isp_packet_generic_blob_handler(void *user_data,
 	case CAM_ISP_GENERIC_BLOB_TYPE_BW_CONFIG_V2: {
 		size_t bw_config_size = 0;
 		struct cam_isp_bw_config_v2    *bw_config;
-		struct cam_isp_bw_config_v2    *bw_config_u;
 		struct cam_isp_prepare_hw_update_data   *prepare_hw_data;
 
 		if (blob_size < sizeof(struct cam_isp_bw_config_v2)) {
@@ -6086,27 +6080,12 @@ static int cam_isp_packet_generic_blob_handler(void *user_data,
 			return -EINVAL;
 		}
 
-		bw_config_u = (struct cam_isp_bw_config_v2 *)blob_data;
+		bw_config = (struct cam_isp_bw_config_v2 *)blob_data;
 
-		if (bw_config_u->num_paths > CAM_ISP_MAX_PER_PATH_VOTES ||
-			!bw_config_u->num_paths) {
-			CAM_ERR(CAM_ISP, "Invalid num paths %d ctx_idx: %u",
-				bw_config_u->num_paths, ife_mgr_ctx->ctx_index);
-			return -EINVAL;
-		}
-
-		bw_config_size = sizeof(struct cam_isp_bw_config_v2) + ((bw_config_u->num_paths-1)*
-					sizeof(struct cam_axi_per_path_bw_vote));
-
-		rc = cam_common_mem_kdup((void **)&bw_config, bw_config_u, bw_config_size);
-		if (rc) {
-			CAM_ERR(CAM_ISP, "Alloc and copy request bw_config failed");
-			return rc;
-		}
-
-		if (bw_config_u->num_paths != bw_config->num_paths) {
-			CAM_ERR(CAM_ISP, "num_paths changed,userspace:%d, kernel:%d", bw_config_u->num_paths,
-					bw_config->num_paths);
+		if (bw_config->num_paths > CAM_ISP_MAX_PER_PATH_VOTES ||
+			!bw_config->num_paths) {
+			CAM_ERR(CAM_ISP, "Invalid num paths %d",
+				bw_config->num_paths);
 			return -EINVAL;
 		}
 
@@ -6452,6 +6431,25 @@ static int cam_isp_packet_generic_blob_handler(void *user_data,
 		if (rc)
 			CAM_ERR(CAM_ISP,
 				"TPG config failed rc: %d", rc);
+	}
+		break;
+	case CAM_ISP_GENERIC_BLOB_TYPE_ANCHOR_CONFIG: {
+		struct cam_isp_anchor_config *anchor_config;
+
+		if (blob_size < sizeof(struct cam_isp_anchor_config)) {
+			CAM_ERR(CAM_ISP, "Invalid blob size %zu expected %zu",
+				blob_size,
+				sizeof(struct cam_isp_anchor_config));
+			return -EINVAL;
+		}
+
+		anchor_config =
+			(struct cam_isp_anchor_config *)blob_data;
+
+		rc = cam_isp_blob_anchor_config(anchor_config, prepare);
+		if (rc)
+			CAM_ERR(CAM_ISP,
+				"Anchor config failed rc: %d", rc);
 	}
 		break;
 	default:
@@ -6816,6 +6814,40 @@ static int cam_ife_mgr_sof_irq_debug(
 	return rc;
 }
 
+static int cam_ife_mgr_trigger_control(
+	struct cam_ife_hw_mgr_ctx *ctx,
+	bool trigger_control)
+{
+	int rc = 0;
+	uint32_t i = 0;
+	struct cam_isp_hw_mgr_res	  *hw_mgr_res = NULL;
+	struct cam_isp_resource_node  *rsrc_node = NULL;
+
+	list_for_each_entry(hw_mgr_res, &ctx->res_list_ife_src, list) {
+		for (i = 0; i < CAM_ISP_HW_SPLIT_MAX; i++) {
+			if (!hw_mgr_res->hw_res[i])
+				continue;
+
+			rsrc_node = hw_mgr_res->hw_res[i];
+			if (rsrc_node->process_cmd && (rsrc_node->res_id ==
+				CAM_ISP_HW_VFE_IN_CAMIF)) {
+				rc = hw_mgr_res->hw_res[i]->process_cmd(
+					hw_mgr_res->hw_res[i],
+					CAM_ISP_HW_CMD_TRIGGER_CONROL,
+					&trigger_control,
+					sizeof(trigger_control));
+
+			CAM_INFO(CAM_ISP,
+				"Set Trigger control ctx id:%d trigger_control:%d",
+				ctx->ctx_index, trigger_control);
+
+			}
+		}
+	}
+
+	return rc;
+}
+
 static void cam_ife_mgr_print_io_bufs(struct cam_ife_hw_mgr  *hw_mgr,
 		uint32_t res_id, struct cam_packet *packet,
 		bool    *ctx_found, struct cam_ife_hw_mgr_ctx *ctx)
@@ -7135,6 +7167,14 @@ static int cam_ife_mgr_cmd(void *hw_mgr_priv, void *cmd_args)
 			isp_hw_cmd_args->u.last_cdm_done =
 				ctx->last_cdm_done_req;
 			break;
+		case CAM_ISP_HW_MGR_GET_ANCHOR_CONFIG:
+			isp_hw_cmd_args->u.is_anchor_instance =
+				ctx->is_anchor_instance;
+			break;
+		case CAM_ISP_HW_MGR_CMD_TRIGGER_CONTROL:
+			cam_ife_mgr_trigger_control(ctx,
+			isp_hw_cmd_args->u.trigger_control);
+			break;
 		default:
 			CAM_ERR(CAM_ISP, "Invalid HW mgr command:0x%x",
 				hw_cmd_args->cmd_type);
@@ -7339,7 +7379,6 @@ static int cam_ife_mgr_dump(void *hw_mgr_priv, void *args)
 		}
 	}
 	dump_args->offset = isp_hw_dump_args.offset;
-	cam_mem_put_cpu_buf(dump_args->buf_handle);
 end:
 	CAM_DBG(CAM_ISP, "offset %u", dump_args->offset);
 	return rc;
@@ -7883,8 +7922,8 @@ static int cam_ife_hw_mgr_handle_hw_rup(
 		break;
 	}
 
-	CAM_DBG(CAM_ISP, "RUP done for VFE:%d source %d", event_info->hw_idx,
-		event_info->res_id);
+	CAM_DBG(CAM_ISP, "RUP done for VFE:%d source %d ctx_id: %d", event_info->hw_idx,
+		event_info->res_id, ife_hw_mgr_ctx->ctx_index);
 
 	return 0;
 }
@@ -7926,8 +7965,8 @@ static int cam_ife_hw_mgr_handle_hw_epoch(
 		break;
 	}
 
-	CAM_DBG(CAM_ISP, "Epoch for VFE:%d source %d", event_info->hw_idx,
-		event_info->res_id);
+	CAM_DBG(CAM_ISP, "Epoch for VFE:%d source %d ctx_id: %d", event_info->hw_idx,
+		event_info->res_id, ife_hw_mgr_ctx->ctx_index);
 
 	return 0;
 }
@@ -7984,20 +8023,8 @@ static int cam_ife_hw_mgr_handle_hw_sof(
 	case CAM_ISP_HW_VFE_IN_RDI1:
 	case CAM_ISP_HW_VFE_IN_RDI2:
 	case CAM_ISP_HW_VFE_IN_RDI3:
-#ifndef OPLUS_FEATURE_CAMERA_COMMON //lanhe todo:
 		if (!ife_hw_mgr_ctx->is_rdi_only_context)
 			break;
-#else
-		if (!ife_hw_mgr_ctx->is_rdi_only_context && !ife_hw_mgr_ctx->use_rdi_sof)
-			break;
-		if(ife_hw_mgr_ctx->use_rdi_sof)
-		{
-			sof_done_event_data.res_id = event_info->res_id;//for hack RDI SOF just for timestamp backup
-			ife_hw_irq_sof_cb(ife_hw_mgr_ctx->common.cb_priv,
-				CAM_ISP_HW_EVENT_SOF, (void *)&sof_done_event_data);
-			break;
-		}
-#endif
 		cam_ife_mgr_cmd_get_sof_timestamp(ife_hw_mgr_ctx,
 			&sof_done_event_data.timestamp,
 			&sof_done_event_data.boot_time);
@@ -8017,8 +8044,8 @@ static int cam_ife_hw_mgr_handle_hw_sof(
 		break;
 	}
 
-	CAM_DBG(CAM_ISP, "SOF for VFE:%d source %d", event_info->hw_idx,
-		event_info->res_id);
+	CAM_DBG(CAM_ISP, "SOF for VFE:%d source %d ctx_id:%d", event_info->hw_idx,
+		event_info->res_id, ife_hw_mgr_ctx->ctx_index);
 
 	return 0;
 }
@@ -8049,14 +8076,6 @@ static int cam_ife_hw_mgr_handle_hw_eof(
 	case CAM_ISP_HW_VFE_IN_RDI1:
 	case CAM_ISP_HW_VFE_IN_RDI2:
 	case CAM_ISP_HW_VFE_IN_RDI3:
-		if (!ife_hw_mgr_ctx->is_rdi_only_context)
-			break;
-		if (atomic_read(&ife_hw_mgr_ctx->overflow_pending))
-			break;
-		ife_hw_irq_eof_cb(ife_hw_mgr_ctx->common.cb_priv,
-			CAM_ISP_HW_EVENT_EOF, (void *)&eof_done_event_data);
-		break;
-
 	case CAM_ISP_HW_VFE_IN_PDLIB:
 	case CAM_ISP_HW_VFE_IN_LCR:
 		break;
@@ -8067,8 +8086,8 @@ static int cam_ife_hw_mgr_handle_hw_eof(
 		break;
 	}
 
-	CAM_DBG(CAM_ISP, "EOF for VFE:%d source %d", event_info->hw_idx,
-		event_info->res_id);
+	CAM_DBG(CAM_ISP, "EOF for VFE:%d source %d ctx_id: %d", event_info->hw_idx,
+		event_info->res_id, ife_hw_mgr_ctx->ctx_index);
 
 	return 0;
 }
@@ -8101,8 +8120,9 @@ static int cam_ife_hw_mgr_handle_hw_buf_done(
 	}
 
 	CAM_DBG(CAM_ISP,
-		"Buf done for VFE:%d res_id: 0x%x last consumed addr: 0x%x",
-		event_info->hw_idx, event_info->res_id, event_info->reg_val);
+		"Buf done for VFE:%d res_id: 0x%x last consumed addr: 0x%x ctx_id: %d",
+		event_info->hw_idx, event_info->res_id, event_info->reg_val,
+		ife_hw_mgr_ctx->ctx_index);
 
 	return 0;
 }
@@ -8113,15 +8133,18 @@ static int cam_ife_hw_mgr_event_handler(
 	void                                *evt_info)
 {
 	int                                  rc = 0;
+	struct cam_ife_hw_mgr_ctx           *ife_hw_mgr_ctx = priv;
 
 	if (!evt_info)
 		return -EINVAL;
 
-	if (!priv)
+	if (!priv) {
 		if (evt_id != CAM_ISP_HW_EVENT_ERROR)
 			return -EINVAL;
-
-	CAM_DBG(CAM_ISP, "Event ID 0x%x", evt_id);
+	} else {
+		CAM_DBG(CAM_ISP, "Event ID 0x%x ctx_id: %d", evt_id,
+				ife_hw_mgr_ctx->ctx_index);
+	}
 
 	switch (evt_id) {
 	case CAM_ISP_HW_EVENT_SOF:

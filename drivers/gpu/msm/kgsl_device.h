@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2002,2007-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #ifndef __KGSL_DEVICE_H
 #define __KGSL_DEVICE_H
@@ -294,7 +293,7 @@ struct kgsl_device {
 	struct kgsl_pwrscale pwrscale;
 
 	int reset_counter; /* Track how many GPU core resets have occurred */
-	struct kthread_worker *events_worker;
+	struct workqueue_struct *events_wq;
 
 	/* Number of active contexts seen globally for this device */
 	int active_context_count;
@@ -325,6 +324,10 @@ struct kgsl_device {
 	struct idr timelines;
 	/** @timelines_lock: Spinlock to protect the timelines idr */
 	spinlock_t timelines_lock;
+	#if IS_ENABLED(CONFIG_DRM_MSM)
+	bool snapshot_control;
+	int snapshotfault;
+	#endif
 };
 
 #define KGSL_MMU_DEVICE(_mmu) \
@@ -525,6 +528,10 @@ struct kgsl_snapshot {
 	bool first_read;
 	bool recovered;
 	struct kgsl_device *device;
+
+	#if IS_ENABLED(CONFIG_DRM_MSM)
+	char snapshot_hashid[96];
+	#endif
 };
 
 /**

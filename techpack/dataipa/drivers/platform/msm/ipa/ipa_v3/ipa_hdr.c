@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "ipa_i.h"
@@ -95,11 +94,13 @@ static int ipa3_hdr_proc_ctx_to_hw_format(struct ipa_mem_buffer *mem,
 		if (unlikely(!entry->hdr || !entry->hdr->offset_entry ||
 				!entry->offset_entry ||
 				entry->hdr->hdr_len == 0 ||
+		// #ifdef OPLUS_BUG_DEBUG
+		// entry->hdr->hdr_len > ipa_hdr_bin_sz[IPA_HDR_BIN_MAX - 1]))
 				entry->hdr->hdr_len > ipa_hdr_bin_sz[IPA_HDR_BIN_MAX - 1])) {
 			IPAERR_RL("Found invalid hdr entry\n");
-			return -EINVAL;
-		}
-
+ 			return -EINVAL;
+ 		}
+		// #endif
 		ret = ipahal_cp_proc_ctx_to_hw_buff(entry->type, mem->base,
 				entry->offset_entry->offset,
 				entry->hdr->hdr_len,
@@ -131,8 +132,9 @@ static int ipa3_generate_hdr_proc_ctx_hw_tbl(u64 hdr_sys_addr,
 {
 	u64 hdr_base_addr;
 	gfp_t flag = GFP_KERNEL;
+	// #ifdef OPLUS_BUG_DEBUG
 	int ret;
-
+	// #endif
 	mem->size = (ipa3_ctx->hdr_proc_ctx_tbl.end) ? : 4;
 
 	/* make sure table is aligned */
@@ -160,12 +162,15 @@ alloc:
 	memset(aligned_mem->base, 0, aligned_mem->size);
 	hdr_base_addr = (ipa3_ctx->hdr_tbl_lcl) ? IPA_MEM_PART(apps_hdr_ofst) :
 		hdr_sys_addr;
+	// #ifdef OPLUS_BUG_DEBUG
+	// return ipa3_hdr_proc_ctx_to_hw_format(aligned_mem, hdr_base_addr);
 	ret = ipa3_hdr_proc_ctx_to_hw_format(aligned_mem, hdr_base_addr);
 	if (ret) {
 		dma_free_coherent(ipa3_ctx->pdev, mem->size, mem->base, mem->phys_base);
 		return ret;
 	}
 	return ret;
+	// #endif
 }
 
 /**
@@ -710,10 +715,7 @@ static int __ipa3_del_hdr_proc_ctx(u32 proc_ctx_hdl,
 		return 0;
 	}
 
-	if (entry->hdr && entry == entry->hdr->proc_ctx)
-		entry->hdr->proc_ctx = NULL;
-
-	if (entry->hdr && release_hdr)
+	if (release_hdr)
 		__ipa3_del_hdr(entry->hdr->id, false);
 
 	/* move the offset entry to appropriate free list */
@@ -777,19 +779,17 @@ int __ipa3_del_hdr(u32 hdr_hdl, bool by_user)
 		return 0;
 	}
 
-	if (entry->proc_ctx && entry == entry->proc_ctx->hdr)
-		entry->proc_ctx->hdr = NULL;
-
 	if (entry->is_hdr_proc_ctx || entry->proc_ctx) {
 		dma_unmap_single(ipa3_ctx->pdev,
 			entry->phys_base,
 			entry->hdr_len,
 			DMA_TO_DEVICE);
 		__ipa3_del_hdr_proc_ctx(entry->proc_ctx->id, false, false);
+	} else {
+		/* move the offset entry to appropriate free list */
+		list_move(&entry->offset_entry->link,
+			&htbl->head_free_offset_list[entry->offset_entry->bin]);
 	}
-	/* move the offset entry to appropriate free list */
-	list_move(&entry->offset_entry->link,
-		&htbl->head_free_offset_list[entry->offset_entry->bin]);
 	list_del(&entry->link);
 	htbl->hdr_cnt--;
 	entry->cookie = 0;

@@ -69,4 +69,3 @@ const struct bpf_verifier_ops fuse_verifier_ops = {
 
 const struct bpf_prog_ops fuse_prog_ops = {
 };
-

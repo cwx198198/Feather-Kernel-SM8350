@@ -1448,7 +1448,7 @@ static const struct of_device_id sildev_dt_ids[] = {
     { .compatible = "sil,silead-fp" },
     { .compatible = "sil,fingerprint" },
     { .compatible = "sil,silead_fp-pins" },
-    { .compatible = "oplus,oplus_fp" },
+    { .compatible = "oppo,oppo_fp" },
     {},
 };
 

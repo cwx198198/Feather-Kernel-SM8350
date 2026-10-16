@@ -1,3 +1,6 @@
+#ifndef OPLUS_CHG_OP_DEF
+#define OPLUS_CHG_OP_DEF 1
+#endif
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2018-2020 Oplus. All rights reserved.
@@ -477,48 +480,6 @@ static int bq27541_get_battery_mvolts(void)
 		}
 	} else {
 		return gauge_ic->batt_vol_pre;
-	}
-}
-
-/*
- * Return remaining time in seconds until the battery is fully charged
- * Or < 0 if something fails.
- */
-
-static int bq27541_get_battery_ttf(void)
-{
-	int ret = 0;
-	int val = 0;
-
-	if (!gauge_ic) {
-		return -1;
-	}
-#ifdef OPLUS_CHG_OP_DEF
-	if (!gauge_ic->bq_present)
-		return -1;
-#endif
-	if(gauge_ic->device_type != DEVICE_BQ27541 && gauge_ic->device_type != DEVICE_ZY0602){
-		return -1;
-	}
-
-	if (atomic_read(&gauge_ic->suspended) != 1) {
-		ret = bq27541_read_i2c(gauge_ic->cmd_addr.reg_ttf, &val);
-		if (ret) {
-			dev_err(gauge_ic->dev, "error reading time to full, ret:%d\n", ret);
-			return -1;
-		} else {
-			// Multiply to handle mins -> secs
-			gauge_ic->ttf_pre = val * 60;
-			// Datasheet states a return of 65535 indicates the battery is
-			// not being charged. Lower-bounds check in case of I2C glitches
-			if (val < 65535 && val >= 0) {
-				return gauge_ic->ttf_pre;
-			} else {
-				return -1;
-			}
-		}
-	} else {
-		return -1;
 	}
 }
 
@@ -1277,34 +1238,6 @@ cb_exit:
 	return temp + ZERO_DEGREE_CELSIUS_IN_TENTH_KELVIN;
 }
 
-static int bq27541_get_batt_design_capacity(void)
-{
-	int ret;
-	int cap = 0;
-
-	if (!gauge_ic) {
-		return 0;
-	}
-#ifdef OPLUS_CHG_OP_DEF
-	if (!gauge_ic->bq_present)
-		return 0;
-#endif
-	if (atomic_read(&gauge_ic->suspended) == 1) {
-		return gauge_ic->dcap_pre;
-	}
-	if (oplus_warp_get_allow_reading() == true) {
-		ret = bq27541_read_i2c(gauge_ic->cmd_addr.reg_dcap, &cap);
-		if (ret) {
-			dev_err(gauge_ic->dev, "error reading design capacity.\n");
-			return ret;
-		}
-		gauge_ic->dcap_pre = cap;
-		return gauge_ic->dcap_pre;
-	} else {
-		return gauge_ic->dcap_pre;
-	}
-}
-
 static int bq27541_get_batt_remaining_capacity(void)
 {
 	int ret;
@@ -1634,7 +1567,6 @@ out:
 static int gauge_reg_dump(void);
 static struct oplus_gauge_operations bq27541_gauge_ops = {
 	.get_battery_mvolts = bq27541_get_battery_mvolts,
-	.get_battery_ttf = bq27541_get_battery_ttf,
 	.get_battery_fc = bq27541_get_battery_fc,
 	.get_battery_qm = bq27541_get_battery_qm,
 	.get_battery_pd = bq27541_get_battery_pd,
@@ -1649,7 +1581,6 @@ static struct oplus_gauge_operations bq27541_gauge_ops = {
 	.get_battery_pc = bq27541_get_battery_pc,
 	.get_battery_qs = bq27541_get_battery_qs,
 	.get_battery_temperature = bq27541_get_battery_temperature,
-	.get_batt_design_capacity = bq27541_get_batt_design_capacity,
 	.get_batt_remaining_capacity = bq27541_get_batt_remaining_capacity,
 	.get_battery_soc = bq27541_get_battery_soc,
 	.get_average_current = bq27541_get_average_current,
@@ -1696,7 +1627,6 @@ static void gauge_set_cmd_addr(struct chip_bq27541 *chip, int device_type)
 		chip->cmd_addr.reg_soc = BQ27541_REG_SOC;
 		chip->cmd_addr.reg_inttemp = BQ27541_REG_INTTEMP;
 		chip->cmd_addr.reg_soh = BQ27541_REG_SOH;
-		chip->cmd_addr.reg_dcap = BQ27541_REG_DCAP;
 		chip->cmd_addr.flag_dsc = BQ27541_FLAG_DSC;
 		chip->cmd_addr.flag_fc = BQ27541_FLAG_FC;
 		chip->cmd_addr.cs_dlogen = BQ27541_CS_DLOGEN;
@@ -1768,7 +1698,6 @@ static void gauge_set_cmd_addr(struct chip_bq27541 *chip, int device_type)
 		chip->cmd_addr.reg_fcu = BQ27411_REG_FCU;
 		chip->cmd_addr.reg_fcf = BQ27411_REG_FCF;
 		chip->cmd_addr.reg_sou = BQ27411_REG_SOU;
-		chip->cmd_addr.reg_dcap = BQ27411_REG_DCAP;
 		chip->cmd_addr.reg_do0 = BQ27411_REG_DO0;
 		chip->cmd_addr.reg_doe = BQ27411_REG_DOE;
 		chip->cmd_addr.reg_trm = BQ27411_REG_TRM;
@@ -3527,7 +3456,6 @@ rerun :
 	if(fg_ic->batt_bq28z610) {
 		fg_ic->batt_vol_pre = 3800;
 		fg_ic->fc_pre = 0;
-		fg_ic->ttf_pre = 5000; // ~1hr 24 mins, based on default previous return value
 		fg_ic->qm_pre = 0;
 		fg_ic->pd_pre = 0;
 		fg_ic->rcu_pre = 0;
@@ -3543,7 +3471,6 @@ rerun :
 	} else {
 		fg_ic->batt_vol_pre = 3800;
 		fg_ic->fc_pre = 0;
-		fg_ic->ttf_pre = 5000; // ~1hr 24 mins, based on default previous return value
 		fg_ic->qm_pre = 0;
 		fg_ic->pd_pre = 0;
 		fg_ic->rcu_pre = 0;

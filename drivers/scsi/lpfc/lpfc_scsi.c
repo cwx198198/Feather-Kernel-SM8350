@@ -246,10 +246,11 @@ lpfc_ramp_down_queue_handler(struct lpfc_hba *phba)
 	struct Scsi_Host  *shost;
 	struct scsi_device *sdev;
 	unsigned long new_queue_depth;
-	unsigned long num_rsrc_err;
+	unsigned long num_rsrc_err, num_cmd_success;
 	int i;
 
 	num_rsrc_err = atomic_read(&phba->num_rsrc_err);
+	num_cmd_success = atomic_read(&phba->num_cmd_success);
 
 	/*
 	 * The error and success command counters are global per
@@ -264,16 +265,20 @@ lpfc_ramp_down_queue_handler(struct lpfc_hba *phba)
 		for (i = 0; i <= phba->max_vports && vports[i] != NULL; i++) {
 			shost = lpfc_shost_from_vport(vports[i]);
 			shost_for_each_device(sdev, shost) {
-				if (num_rsrc_err >= sdev->queue_depth)
-					new_queue_depth = 1;
+				new_queue_depth =
+					sdev->queue_depth * num_rsrc_err /
+					(num_rsrc_err + num_cmd_success);
+				if (!new_queue_depth)
+					new_queue_depth = sdev->queue_depth - 1;
 				else
 					new_queue_depth = sdev->queue_depth -
-						num_rsrc_err;
+								new_queue_depth;
 				scsi_change_queue_depth(sdev, new_queue_depth);
 			}
 		}
 	lpfc_destroy_vport_work_array(phba, vports);
 	atomic_set(&phba->num_rsrc_err, 0);
+	atomic_set(&phba->num_cmd_success, 0);
 }
 
 /**
@@ -467,10 +472,6 @@ lpfc_sli4_vport_delete_fcp_xri_aborted(struct lpfc_vport *vport)
 	int idx;
 
 	if (!(vport->cfg_enable_fc4_type & LPFC_ENABLE_FCP))
-		return;
-
-	/* may be called before queues established if hba_setup fails */
-	if (!phba->sli4_hba.hdwq)
 		return;
 
 	spin_lock_irqsave(&phba->hbalock, iflag);
@@ -1941,7 +1942,7 @@ out:
  *
  * Returns the number of SGEs added to the SGL.
  **/
-static uint32_t
+static int
 lpfc_bg_setup_sgl(struct lpfc_hba *phba, struct scsi_cmnd *sc,
 		struct sli4_sge *sgl, int datasegcnt,
 		struct lpfc_io_buf *lpfc_cmd)
@@ -1949,8 +1950,8 @@ lpfc_bg_setup_sgl(struct lpfc_hba *phba, struct scsi_cmnd *sc,
 	struct scatterlist *sgde = NULL; /* s/g data entry */
 	struct sli4_sge_diseed *diseed = NULL;
 	dma_addr_t physaddr;
-	int i = 0, status;
-	uint32_t reftag, num_sge = 0;
+	int i = 0, num_sge = 0, status;
+	uint32_t reftag;
 	uint8_t txop, rxop;
 #ifdef CONFIG_SCSI_LPFC_DEBUG_FS
 	uint32_t rc;
@@ -2121,7 +2122,7 @@ out:
  *
  * Returns the number of SGEs added to the SGL.
  **/
-static uint32_t
+static int
 lpfc_bg_setup_sgl_prot(struct lpfc_hba *phba, struct scsi_cmnd *sc,
 		struct sli4_sge *sgl, int datacnt, int protcnt,
 		struct lpfc_io_buf *lpfc_cmd)
@@ -2145,8 +2146,8 @@ lpfc_bg_setup_sgl_prot(struct lpfc_hba *phba, struct scsi_cmnd *sc,
 	uint32_t rc;
 #endif
 	uint32_t checking = 1;
-	uint32_t dma_offset = 0, num_sge = 0;
-	int j = 2;
+	uint32_t dma_offset = 0;
+	int num_sge = 0, j = 2;
 	struct sli4_hybrid_sgl *sgl_xtra = NULL;
 
 	sgpe = scsi_prot_sglist(sc);
@@ -5153,7 +5154,7 @@ lpfc_chk_tgt_mapped(struct lpfc_vport *vport, struct scsi_cmnd *cmnd)
 /**
  * lpfc_reset_flush_io_context -
  * @vport: The virtual port (scsi_host) for the flush context
- * @tgt_id: If aborting by Target context - specifies the target id
+ * @tgt_id: If aborting by Target contect - specifies the target id
  * @lun_id: If aborting by Lun context - specifies the lun id
  * @context: specifies the context level to flush at.
  *
@@ -5312,14 +5313,8 @@ lpfc_target_reset_handler(struct scsi_cmnd *cmnd)
 			pnode->nlp_fcp_info &= ~NLP_FCP_2_DEVICE;
 			spin_unlock_irq(shost->host_lock);
 		}
-		status = lpfc_reset_flush_io_context(vport, tgt_id, lun_id,
-						     LPFC_CTX_TGT);
-		if (status != SUCCESS) {
-			lpfc_printf_vlog(vport, KERN_ERR, LOG_FCP,
-					 "0726 Target Reset flush status x%x\n",
-					 status);
-			return status;
-		}
+		lpfc_reset_flush_io_context(vport, tgt_id, lun_id,
+					  LPFC_CTX_TGT);
 		return FAST_IO_FAIL;
 	}
 
@@ -5463,7 +5458,7 @@ lpfc_host_reset_handler(struct scsi_cmnd *cmnd)
 	int rc, ret = SUCCESS;
 
 	lpfc_printf_vlog(vport, KERN_ERR, LOG_FCP,
-			 "3172 SCSI layer issued Host Reset\n");
+			 "3172 SCSI layer issued Host Reset Data:\n");
 
 	lpfc_offline_prep(phba, LPFC_MBX_WAIT);
 	lpfc_offline(phba);

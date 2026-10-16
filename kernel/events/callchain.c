@@ -149,7 +149,7 @@ void put_callchain_buffers(void)
 	}
 }
 
-struct perf_callchain_entry *get_callchain_entry(int *rctx)
+static struct perf_callchain_entry *get_callchain_entry(int *rctx)
 {
 	int cpu;
 	struct callchain_cpus_entries *entries;
@@ -159,10 +159,8 @@ struct perf_callchain_entry *get_callchain_entry(int *rctx)
 		return NULL;
 
 	entries = rcu_dereference(callchain_cpus_entries);
-	if (!entries) {
-		put_recursion_context(this_cpu_ptr(callchain_recursion), *rctx);
+	if (!entries)
 		return NULL;
-	}
 
 	cpu = smp_processor_id();
 
@@ -170,7 +168,7 @@ struct perf_callchain_entry *get_callchain_entry(int *rctx)
 		(*rctx * perf_callchain_entry__sizeof()));
 }
 
-void
+static void
 put_callchain_entry(int rctx)
 {
 	put_recursion_context(this_cpu_ptr(callchain_recursion), rctx);
@@ -185,8 +183,11 @@ get_perf_callchain(struct pt_regs *regs, u32 init_nr, bool kernel, bool user,
 	int rctx;
 
 	entry = get_callchain_entry(&rctx);
-	if (!entry)
+	if (rctx == -1)
 		return NULL;
+
+	if (!entry)
+		goto exit_put;
 
 	ctx.entry     = entry;
 	ctx.max_stack = max_stack;
@@ -235,7 +236,7 @@ exit_put:
  * sysctl_perf_event_max_contexts_per_stack.
  */
 int perf_event_max_stack_handler(struct ctl_table *table, int write,
-				 void *buffer, size_t *lenp, loff_t *ppos)
+				 void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	int *value = table->data;
 	int new_value = *value, ret;

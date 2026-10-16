@@ -1,3 +1,6 @@
+#ifndef OPLUS_CHG_OP_DEF
+#define OPLUS_CHG_OP_DEF 1
+#endif
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2018-2020 Oplus. All rights reserved.
@@ -48,16 +51,6 @@ int oplus_gauge_get_batt_mvolts(void)
 			return gauge_dbg_vbat;
 			}
 		return g_gauge_chip->gauge_ops->get_battery_mvolts();
-	}
-}
-
-int oplus_gauge_get_batt_ttf(void)
-{
-	if (!g_gauge_chip || !g_gauge_chip->gauge_ops
-		|| !g_gauge_chip->gauge_ops->get_battery_ttf) {
-		return 0;
-	} else {
-		return g_gauge_chip->gauge_ops->get_battery_ttf();
 	}
 }
 
@@ -253,15 +246,6 @@ int oplus_gauge_get_batt_current(void)
 			return gauge_dbg_ibat;
 			}
 		return g_gauge_chip->gauge_ops->get_average_current();
-	}
-}
-
-int oplus_gauge_get_design_capacity(void)
-{
-	if (!g_gauge_chip) {
-		return 0;
-	} else {
-		return g_gauge_chip->gauge_ops->get_batt_design_capacity();
 	}
 }
 

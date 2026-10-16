@@ -1,7 +1,7 @@
 /************************************************************************************
-** File: - MSM8953_LA_1_0\android\kernel\include\soc\oplus\oplus_fp_common.h
+** File: - MSM8953_LA_1_0\android\kernel\include\soc\oppo\oplus_fp_common.h
 ** OPLUS_FEATURE_FINGERPRINT
-** Copyright (C), 2008-2020, OPLUS Mobile Comm Corp., Ltd
+** Copyright (C), 2008-2020, OPPO Mobile Comm Corp., Ltd
 **
 ** Description:
 **          fingerprint compatibility configuration

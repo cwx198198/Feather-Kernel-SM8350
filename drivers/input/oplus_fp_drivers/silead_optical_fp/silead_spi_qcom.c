@@ -1,7 +1,7 @@
 /************************************************************************************
  ** File: - silead_fp_platform.c
  ** OPLUS_FEATURE_FINGERPRINT
- ** Copyright (C), 2008-2017, OPLUS Mobile Comm Corp., Ltd
+ ** Copyright (C), 2008-2017, OPPO Mobile Comm Corp., Ltd
  **
  ** Description:
  **                  fpc fingerprint kernel device driver

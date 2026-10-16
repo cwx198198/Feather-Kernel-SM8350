@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -27,7 +26,6 @@
 #include "camera_main.h"
 #include "cam_trace.h"
 #include "cam_req_mgr_workq.h"
-#include "cam_common_util.h"
 
 #define CAM_CDM_BL_FIFO_WAIT_TIMEOUT 2000
 #define CAM_CDM_DBG_GEN_IRQ_USR_DATA 0xff
@@ -856,7 +854,6 @@ static int cam_hw_cdm_arb_submit_bl(struct cam_hw_info *cdm_hw,
 			"CDM hw bl write failed tag=%d",
 			core->bl_fifo[fifo_idx].bl_tag -
 			1);
-			cam_mem_put_cpu_buf(cdm_cmd->cmd[i].bl_addr.mem_handle);
 			list_del_init(&node->entry);
 			kfree(node);
 			return -EIO;
@@ -868,12 +865,11 @@ static int cam_hw_cdm_arb_submit_bl(struct cam_hw_info *cdm_hw,
 			"CDM hw commit failed tag=%d",
 			core->bl_fifo[fifo_idx].bl_tag -
 			1);
-			cam_mem_put_cpu_buf(cdm_cmd->cmd[i].bl_addr.mem_handle);
 			list_del_init(&node->entry);
 			kfree(node);
 			return -EIO;
 	}
-	cam_mem_put_cpu_buf(cdm_cmd->cmd[i].bl_addr.mem_handle);
+
 	return 0;
 }
 
@@ -1219,10 +1215,8 @@ static void cam_hw_cdm_work(struct work_struct *work)
 		return;
 	}
 
-	cam_common_util_thread_switch_delay_detect(
-		"CDM workq schedule",
-		payload->workq_scheduled_ts,
-		CAM_WORKQ_SCHEDULE_TIME_THRESHOLD);
+	cam_req_mgr_thread_switch_delay_detect(
+		payload->workq_scheduled_ts);
 
 	CAM_DBG(CAM_CDM, "IRQ status=0x%x", payload->irq_status);
 	if (payload->irq_status &
@@ -1241,7 +1235,6 @@ static void cam_hw_cdm_work(struct work_struct *work)
 			return;
 		}
 
-		mutex_lock(&cdm_hw->hw_mutex);
 		mutex_lock(&core->bl_fifo[fifo_idx].fifo_lock);
 
 		if (atomic_read(&core->bl_fifo[fifo_idx].work_record))
@@ -1255,7 +1248,6 @@ static void cam_hw_cdm_work(struct work_struct *work)
 				core->arbitration);
 			mutex_unlock(&core->bl_fifo[fifo_idx]
 					.fifo_lock);
-			mutex_unlock(&cdm_hw->hw_mutex);
 			return;
 		}
 
@@ -1294,7 +1286,6 @@ static void cam_hw_cdm_work(struct work_struct *work)
 		}
 		mutex_unlock(&core->bl_fifo[payload->fifo_idx]
 			.fifo_lock);
-		mutex_unlock(&cdm_hw->hw_mutex);
 	}
 
 	if (payload->irq_status &
@@ -1411,9 +1402,9 @@ handle_cdm_pf:
 				cdm_hw->soc_info.index);
 		for (i = 0; i < core->offsets->reg_data->num_bl_fifo; i++)
 			mutex_unlock(&core->bl_fifo[i].fifo_lock);
+		mutex_unlock(&cdm_hw->hw_mutex);
 		cam_cdm_notify_clients(cdm_hw, CAM_CDM_CB_STATUS_PAGEFAULT,
 			(void *)pf_info->iova);
-		mutex_unlock(&cdm_hw->hw_mutex);
 		clear_bit(CAM_CDM_ERROR_HW_STATUS, &core->cdm_status);
 	} else {
 		CAM_ERR(CAM_CDM, "Invalid token");
@@ -1865,25 +1856,38 @@ int cam_hw_cdm_handle_error(
 
 int cam_hw_cdm_hang_detect(
 	struct cam_hw_info *cdm_hw,
-	uint32_t            handle)
+	uint32_t            handle,
+	uint32_t            hang_detect_ife_ope)
 {
 	struct cam_cdm *cdm_core = NULL;
 	struct cam_hw_soc_info *soc_info;
 	int i, rc = -1;
+	uint32_t fifo_idx;
 
+	fifo_idx = CAM_CDM_GET_BLFIFO_IDX(handle);
 	cdm_core = (struct cam_cdm *)cdm_hw->core_info;
 	soc_info = &cdm_hw->soc_info;
 
-	for (i = 0; i < cdm_core->offsets->reg_data->num_bl_fifo; i++)
-		if (atomic_read(&cdm_core->bl_fifo[i].work_record)) {
+	if (hang_detect_ife_ope & CAM_ISP) {
+		if (atomic_read(&cdm_core->bl_fifo[fifo_idx].work_record)) {
 			CAM_WARN(CAM_CDM,
-				"workqueue got delayed for %s%u, work_record :%u",
+				"workqueue got delayed for %s%u , work_record :%u",
 				soc_info->label_name, soc_info->index,
-				atomic_read(&cdm_core->bl_fifo[i].work_record));
+				atomic_read(&cdm_core->bl_fifo[fifo_idx].work_record));
 			rc = 0;
-			break;
 		}
-
+	} else {
+		for (i = 0; i < cdm_core->offsets->reg_data->num_bl_fifo; i++) {
+			if (atomic_read(&cdm_core->bl_fifo[i].work_record)) {
+				CAM_WARN(CAM_CDM,
+					"workqueue got delayed for %s%u, work_record :%u",
+					soc_info->label_name, soc_info->index,
+					atomic_read(&cdm_core->bl_fifo[i].work_record));
+				rc = 0;
+				break;
+			}
+		}
+	}
 	return rc;
 }
 
@@ -2230,7 +2234,7 @@ static int cam_hw_cdm_component_bind(struct device *dev,
 				sizeof(cdm_core->name));
 		snprintf(work_q_name + len, sizeof(work_q_name) - len, "%d", i);
 		cdm_core->bl_fifo[i].work_queue = alloc_workqueue(work_q_name,
-				WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS | WQ_HIGHPRI,
+				WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS,
 				CAM_CDM_INFLIGHT_WORKS);
 		if (!cdm_core->bl_fifo[i].work_queue) {
 			CAM_ERR(CAM_CDM,

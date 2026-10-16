@@ -872,7 +872,7 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
 	if (ret)
 		return ret;
 
-	timeout = wait_for_completion_timeout(&tx_sent, HZ);
+	timeout = wait_for_completion_timeout(&ctrl->xfer_done, HZ);
 	if (!timeout) {
 		dev_err(sctrl->dev, "TX timed out:MC:0x%x,mt:0x%x", txn->mc,
 					txn->mt);
@@ -880,7 +880,7 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
 	}
 
 	if (usr_msg) {
-		timeout = wait_for_completion_timeout(&ctrl->xfer_done, HZ);
+		timeout = wait_for_completion_timeout(&done, HZ);
 		if (!timeout) {
 			dev_err(sctrl->dev, "TX timed out:MC:0x%x,mt:0x%x",
 				txn->mc, txn->mt);
@@ -896,6 +896,7 @@ static int qcom_slim_ngd_xfer_msg_sync(struct slim_controller *ctrl,
 {
 	struct qcom_slim_ngd_ctrl *dev =
 		container_of(ctrl, struct qcom_slim_ngd_ctrl, ctrl);
+
 	int ret, timeout;
 
 	reinit_completion(&dev->sync_done);

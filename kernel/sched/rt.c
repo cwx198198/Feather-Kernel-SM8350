@@ -14,9 +14,29 @@
 #include "walt/walt.h"
 
 #include <trace/hooks/sched.h>
+#ifdef CONFIG_OPLUS_FEATURE_IM
+#include <linux/im/im.h>
+#endif
+
+#if defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_CTP)
+#include <trace/events/sched.h>
+#endif /* defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_CTP) */
+#if defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_UTILS_MONITOR)
+#include <linux/task_load.h>
+#endif
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+#include "../tuning/frame_group.h"
+#endif
+#ifdef CONFIG_OPLUS_FEATURE_GAME_OPT
+#include "../../drivers/soc/oplus/game_opt/game_ctrl.h"
+#endif
+
+#ifdef CONFIG_OPLUS_CPU_AUDIO_PERF
+#include "../sched_assist/sched_assist_audio.h"
+#endif
 
 int sched_rr_timeslice = RR_TIMESLICE;
-int sysctl_sched_rr_timeslice = (MSEC_PER_SEC * RR_TIMESLICE) / HZ;
+int sysctl_sched_rr_timeslice = (MSEC_PER_SEC / HZ) * RR_TIMESLICE;
 /* More than 4 hours if BW_SHIFT equals 20. */
 static const u64 max_rt_runtime = MAX_BW;
 
@@ -1098,8 +1118,18 @@ static void update_curr_rt(struct rq *rq)
 	curr->se.sum_exec_runtime += delta_exec;
 	account_group_exec_runtime(curr, delta_exec);
 
+#if defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_UTILS_MONITOR)
+	account_normalize_runtime(curr, delta_exec, rq);
+#endif
+
 	curr->se.exec_start = now;
 	cgroup_account_cputime(curr, delta_exec);
+#ifdef CONFIG_OPLUS_FEATURE_GAME_OPT
+	g_update_task_runtime(curr, delta_exec);
+#endif
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+	fbg_update_rt_util_hook(NULL, curr, delta_exec);
+#endif
 
 	if (!rt_bandwidth_enabled())
 		return;
@@ -1462,8 +1492,15 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
 
+#if defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_CTP)
+	if (flags & ENQUEUE_WAKEUP) {
+		rt_se->timeout = 0;
+		trace_sched_blocked_reason(p);
+	}
+#else
 	if (flags & ENQUEUE_WAKEUP)
 		rt_se->timeout = 0;
+#endif /* defined(OPLUS_FEATURE_TASK_CPUSTATS) && defined(CONFIG_OPLUS_CTP) */
 
 	enqueue_rt_entity(rt_se, flags);
 	walt_inc_cumulative_runnable_avg(rq, p);
@@ -1666,7 +1703,11 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
 
 #ifdef CONFIG_SCHED_WALT
 #define WALT_RT_PULL_THRESHOLD_NS	250000
+#ifdef CONFIG_OPLUS_FEATURE_SCHED_ASSIST
+struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu);
+#else
 static struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu);
+#endif
 static void try_pull_rt_task(struct rq *this_rq)
 {
 	int i, this_cpu = this_rq->cpu, src_cpu = this_cpu;
@@ -1867,7 +1908,11 @@ static int pick_rt_task(struct rq *rq, struct task_struct *p, int cpu)
  * Return the highest pushable rq's task, which is suitable to be executed
  * on the CPU, NULL otherwise
  */
+#ifdef CONFIG_OPLUS_FEATURE_SCHED_ASSIST
+struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu)
+#else
 static struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu)
+#endif
 {
 	struct plist_head *head = &rq->rt.pushable_tasks;
 	struct task_struct *p;
@@ -1882,6 +1927,9 @@ static struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu)
 
 	return NULL;
 }
+#ifdef CONFIG_OPLUS_FEATURE_SCHED_ASSIST
+EXPORT_SYMBOL_GPL(pick_highest_pushable_task);
+#endif
 
 static DEFINE_PER_CPU(cpumask_var_t, local_cpu_mask);
 
@@ -1901,6 +1949,19 @@ static int rt_energy_aware_wake_cpu(struct task_struct *task)
 	int cpu_idle_idx = -1;
 	bool boost_on_big = rt_boost_on_big();
 	bool best_cpu_lt = true;
+
+#ifdef CONFIG_OPLUS_SF_BOOST
+	/* For surfaceflinger with util > 90, prefer to use big core */
+	if (task->compensate_need == 2 && tutil > 90)
+		boost_on_big = true;
+#endif
+#ifdef CONFIG_OPLUS_FEATURE_IM
+	/* For hwc with util > 51, prefer to use big core */
+	if (im_hwc(task) || im_hwbinder(task)) {
+		if (tutil > 51)
+			boost_on_big = true;
+	}
+#endif
 
 	rcu_read_lock();
 
@@ -1937,8 +1998,17 @@ retry:
 			if (sched_cpu_high_irqload(cpu))
 				continue;
 
+#ifdef CONFIG_OPLUS_FEATURE_IM
+			if (__cpu_overutilized(cpu, tutil) && !im_hwc(task))
+#else
 			if (__cpu_overutilized(cpu, tutil))
+#endif
 				continue;
+
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+			if (!fbg_rt_task_fits_capacity(task, cpu))
+				continue;
+#endif
 
 			util = cpu_util(cpu);
 
@@ -2018,10 +2088,23 @@ static int find_lowest_rq(struct task_struct *task)
 	int cpu = -1;
 	int ret;
 	int lowest_cpu = -1;
+#ifdef CONFIG_OPLUS_CPU_AUDIO_PERF
+	unsigned int drop_cpu;
+#endif
 
 	trace_android_rvh_find_lowest_rq(task, lowest_mask, &lowest_cpu);
 	if (lowest_cpu >= 0)
 		return lowest_cpu;
+
+#ifdef CONFIG_OPLUS_CPU_AUDIO_PERF
+	/* skip the high idle latency cpu */
+	drop_cpu = cpumask_first(lowest_mask);
+	while (drop_cpu < nr_cpu_ids) {
+		if (oplus_sched_assist_audio_perf_check_exit_latency(task, drop_cpu))
+			cpumask_clear_cpu(drop_cpu, lowest_mask);
+		drop_cpu = cpumask_next(drop_cpu, lowest_mask);
+	}
+#endif
 
 	/* Make sure the mask is initialized first */
 	if (unlikely(!lowest_mask))
@@ -2530,7 +2613,10 @@ static void pull_rt_task(struct rq *this_rq)
 			 */
 			if (p->prio < src_rq->curr->prio)
 				goto skip;
-
+#ifdef CONFIG_OPLUS_FEATURE_FRAME_BOOST
+			if (!fbg_rt_task_fits_capacity(p, this_cpu))
+				goto skip;
+#endif
 			resched = true;
 
 			deactivate_task(src_rq, p, 0);
@@ -3055,6 +3141,9 @@ static int sched_rt_global_constraints(void)
 
 static int sched_rt_global_validate(void)
 {
+	if (sysctl_sched_rt_period <= 0)
+		return -EINVAL;
+
 	if ((sysctl_sched_rt_runtime != RUNTIME_INF) &&
 		((sysctl_sched_rt_runtime > sysctl_sched_rt_period) ||
 		 ((u64)sysctl_sched_rt_runtime *
@@ -3074,8 +3163,9 @@ static void sched_rt_do_global(void)
 	raw_spin_unlock_irqrestore(&def_rt_bandwidth.rt_runtime_lock, flags);
 }
 
-int sched_rt_handler(struct ctl_table *table, int write, void *buffer,
-		size_t *lenp, loff_t *ppos)
+int sched_rt_handler(struct ctl_table *table, int write,
+		void __user *buffer, size_t *lenp,
+		loff_t *ppos)
 {
 	int old_period, old_runtime;
 	static DEFINE_MUTEX(mutex);
@@ -3085,7 +3175,7 @@ int sched_rt_handler(struct ctl_table *table, int write, void *buffer,
 	old_period = sysctl_sched_rt_period;
 	old_runtime = sysctl_sched_rt_runtime;
 
-	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+	ret = proc_dointvec(table, write, buffer, lenp, ppos);
 
 	if (!ret && write) {
 		ret = sched_rt_global_validate();
@@ -3113,8 +3203,9 @@ undo:
 	return ret;
 }
 
-int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
-		size_t *lenp, loff_t *ppos)
+int sched_rr_handler(struct ctl_table *table, int write,
+		void __user *buffer, size_t *lenp,
+		loff_t *ppos)
 {
 	int ret;
 	static DEFINE_MUTEX(mutex);
@@ -3129,9 +3220,6 @@ int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
 		sched_rr_timeslice =
 			sysctl_sched_rr_timeslice <= 0 ? RR_TIMESLICE :
 			msecs_to_jiffies(sysctl_sched_rr_timeslice);
-
-		if (sysctl_sched_rr_timeslice <= 0)
-			sysctl_sched_rr_timeslice = jiffies_to_msecs(RR_TIMESLICE);
 	}
 	mutex_unlock(&mutex);
 

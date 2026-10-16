@@ -10,6 +10,11 @@
 #include "cam_trace.h"
 #include "camera_main.h"
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+#include "cam_compat.h"
+static bool gProbe_done;
+#endif
+
 static int cam_actuator_subdev_close_internal(struct v4l2_subdev *sd,
 	struct v4l2_subdev_fh *fh)
 {
@@ -203,9 +208,6 @@ static int32_t cam_actuator_driver_i2c_probe(struct i2c_client *client,
 	soc_info->dev_name = client->name;
 	a_ctrl->io_master_info.master_type = I2C_MASTER;
 
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	CAM_INFO(CAM_ACTUATOR, "calling parsedt ac");
-#endif
 	rc = cam_actuator_parse_dt(a_ctrl, &client->dev);
 	if (rc < 0) {
 		CAM_ERR(CAM_ACTUATOR, "failed: cam_sensor_parse_dt rc %d", rc);
@@ -277,9 +279,6 @@ static int cam_actuator_component_bind(struct device *dev,
 	a_ctrl->soc_info.dev_name = pdev->name;
 	a_ctrl->io_master_info.master_type = CCI_MASTER;
 
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	CAM_INFO(CAM_ACTUATOR, "enter");
-#endif
 	a_ctrl->io_master_info.cci_client = kzalloc(sizeof(
 		struct cam_sensor_cci_client), GFP_KERNEL);
 	if (!(a_ctrl->io_master_info.cci_client)) {
@@ -308,9 +307,6 @@ static int cam_actuator_component_bind(struct device *dev,
 
 	for (i = 0; i < MAX_PER_FRAME_ARRAY; i++)
 		INIT_LIST_HEAD(&(a_ctrl->i2c_data.per_frame[i].list_head));
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	CAM_INFO(CAM_ACTUATOR, "calling parse actuator dt");
-#endif
 
 	rc = cam_actuator_parse_dt(a_ctrl, &(pdev->dev));
 	if (rc < 0) {
@@ -448,6 +444,9 @@ static int32_t cam_actuator_driver_platform_probe(
 	if (rc)
 		CAM_ERR(CAM_ICP, "failed to add component rc: %d", rc);
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	gProbe_done = true;
+#endif
 	return rc;
 }
 
@@ -482,6 +481,10 @@ int cam_actuator_driver_init(void)
 {
 	int32_t rc = 0;
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	void *drv_ptr = NULL;
+	gProbe_done = false;
+#endif
 	rc = platform_driver_register(&cam_actuator_platform_driver);
 	if (rc < 0) {
 		CAM_ERR(CAM_ACTUATOR,
@@ -492,6 +495,13 @@ int cam_actuator_driver_init(void)
 	if (rc)
 		CAM_ERR(CAM_ACTUATOR, "i2c_add_driver failed rc = %d", rc);
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	if (gProbe_done == false) {
+		CAM_ERR(CAM_SENSOR, "%s deferred probe", cam_actuator_platform_driver.driver.name);
+		drv_ptr = (void*)&(cam_actuator_platform_driver.driver);
+		dev_defer_supplier_debug(drv_ptr);
+	}
+#endif
 	return rc;
 }
 

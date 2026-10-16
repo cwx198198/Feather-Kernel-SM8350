@@ -1251,7 +1251,6 @@ static int dm_resume(void *handle)
 			dc_stream_release(dm_new_crtc_state->stream);
 			dm_new_crtc_state->stream = NULL;
 		}
-		dm_new_crtc_state->base.color_mgmt_changed = true;
 	}
 
 	for_each_new_plane_in_state(dm->cached_state, plane, new_plane_state, i) {
@@ -2263,10 +2262,7 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
 
 	/* There is one primary plane per CRTC */
 	primary_planes = dm->dc->caps.max_streams;
-	if (primary_planes > AMDGPU_MAX_PLANES) {
-		DRM_ERROR("DM: Plane nums out of 6 planes\n");
-		return -EINVAL;
-	}
+	ASSERT(primary_planes <= AMDGPU_MAX_PLANES);
 
 	/*
 	 * Initialize primary planes, implicit planes for legacy IOCTLS.
@@ -6505,20 +6501,16 @@ static int dm_force_atomic_commit(struct drm_connector *connector)
 	 */
 	conn_state = drm_atomic_get_connector_state(state, connector);
 
-	/* Check for error in getting connector state */
-	if (IS_ERR(conn_state)) {
-		ret = PTR_ERR(conn_state);
+	ret = PTR_ERR_OR_ZERO(conn_state);
+	if (ret)
 		goto out;
-	}
 
 	/* Attach crtc to drm_atomic_state*/
 	crtc_state = drm_atomic_get_crtc_state(state, &disconnected_acrtc->base);
 
-	/* Check for error in getting crtc state */
-	if (IS_ERR(crtc_state)) {
-		ret = PTR_ERR(crtc_state);
+	ret = PTR_ERR_OR_ZERO(crtc_state);
+	if (ret)
 		goto out;
-	}
 
 	/* force a restore */
 	crtc_state->mode_changed = true;
@@ -6526,11 +6518,9 @@ static int dm_force_atomic_commit(struct drm_connector *connector)
 	/* Attach plane to drm_atomic_state */
 	plane_state = drm_atomic_get_plane_state(state, plane);
 
-	/* Check for error in getting plane state */
-	if (IS_ERR(plane_state)) {
-		ret = PTR_ERR(plane_state);
+	ret = PTR_ERR_OR_ZERO(plane_state);
+	if (ret)
 		goto out;
-	}
 
 	/* Call commit internally with the state we just constructed */
 	ret = drm_atomic_commit(state);

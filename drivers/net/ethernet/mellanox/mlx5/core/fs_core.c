@@ -1549,9 +1549,8 @@ static struct mlx5_flow_handle *add_rule_fg(struct mlx5_flow_group *fg,
 	}
 	trace_mlx5_fs_set_fte(fte, false);
 
-	/* Link newly added rules into the tree. */
 	for (i = 0; i < handle->num_rules; i++) {
-		if (!handle->rule[i]->node.parent) {
+		if (refcount_read(&handle->rule[i]->node.refcount) == 1) {
 			tree_add_node(&handle->rule[i]->node, &fte->node);
 			trace_mlx5_fs_add_rule(handle->rule[i]);
 		}
@@ -1678,22 +1677,13 @@ lookup_fte_locked(struct mlx5_flow_group *g,
 		fte_tmp = NULL;
 		goto out;
 	}
-
-	nested_down_write_ref_node(&fte_tmp->node, FS_LOCK_CHILD);
-
 	if (!fte_tmp->node.active) {
-		up_write_ref_node(&fte_tmp->node, false);
-
-		if (take_write)
-			up_write_ref_node(&g->node, false);
-		else
-			up_read_ref_node(&g->node);
-
 		tree_put_node(&fte_tmp->node, false);
-
-		return NULL;
+		fte_tmp = NULL;
+		goto out;
 	}
 
+	nested_down_write_ref_node(&fte_tmp->node, FS_LOCK_CHILD);
 out:
 	if (take_write)
 		up_write_ref_node(&g->node, false);
@@ -1716,7 +1706,6 @@ try_add_to_existing_fg(struct mlx5_flow_table *ft,
 	struct mlx5_flow_handle *rule;
 	struct match_list *iter;
 	bool take_write = false;
-	bool try_again = false;
 	struct fs_fte *fte;
 	u64  version;
 	int err;
@@ -1769,13 +1758,10 @@ skip_search:
 	list_for_each_entry(iter, match_head, list) {
 		g = iter->g;
 
-		nested_down_write_ref_node(&g->node, FS_LOCK_PARENT);
-
-		if (!g->node.active) {
-			try_again = true;
-			up_write_ref_node(&g->node, false);
+		if (!g->node.active)
 			continue;
-		}
+
+		nested_down_write_ref_node(&g->node, FS_LOCK_PARENT);
 
 		err = insert_fte(g, fte);
 		if (err) {
@@ -1794,8 +1780,7 @@ skip_search:
 			tree_put_node(&fte->node, false);
 		return rule;
 	}
-	err = try_again ? -EAGAIN : -ENOENT;
-	rule = ERR_PTR(err);
+	rule = ERR_PTR(-ENOENT);
 out:
 	kmem_cache_free(steering->ftes_cache, fte);
 	return rule;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 /* Uncomment this block to log an error on every VERIFY failure */
@@ -62,7 +62,6 @@
 #define TZ_PIL_AUTH_QDSP6_PROC 1
 
 #define FASTRPC_DMAHANDLE_NOMAP (16)
-#define FASTRPC_MAP_DMA_HANDLE  0x20000
 
 #define FASTRPC_ENOSUCH 39
 #define DEBUGFS_SIZE 3072
@@ -444,7 +443,6 @@ struct smq_invoke_ctx {
 	uint32_t sc_interrupted;
 	struct fastrpc_file *fl_interrupted;
 	uint32_t handle_interrupted;
-	struct timespec64 invoke_start_time;  /* submission timestamp for async perf */
 };
 
 struct fastrpc_ctx_lst {
@@ -1125,12 +1123,11 @@ static void fastrpc_mmap_add_global(struct fastrpc_mmap *map)
 static void fastrpc_mmap_add(struct fastrpc_mmap *map)
 {
 	struct fastrpc_file *fl = map->fl;
-
 	hlist_add_head(&map->hn, &fl->maps);
 }
 
 static int fastrpc_mmap_find(struct fastrpc_file *fl, int fd,
-		uintptr_t va, size_t len, int mflags, bool refs,
+		uintptr_t va, size_t len, int mflags, int refs,
 		struct fastrpc_mmap **ppmap)
 {
 	struct fastrpc_mmap *match = NULL, *map = NULL;
@@ -1217,8 +1214,7 @@ static int fastrpc_mmap_remove(struct fastrpc_file *fl, int fd, uintptr_t va,
 		return 0;
 	}
 	hlist_for_each_entry_safe(map, n, &fl->maps, hn) {
-		if ((fd < 0 || map->fd == fd) &&
-			map->raddr == va &&
+		if ((fd < 0 || map->fd == fd) && map->raddr == va &&
 			map->raddr + map->len == va + len &&
 			/* Remove if only one reference map and no context map */
 			map->refs == 1 &&
@@ -1282,9 +1278,8 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 	} else {
 		if (map->refs)
 			map->refs--;
-		/* flags is passed as 1 during fastrpc_file_free
-		 * (ie process exit), so that maps will be cleared
-		 *  even though references are present.
+		/* flags is passed as 1 during fastrpc_file_free (ie process exit),
+		 * so that maps will be cleared even though references are present.
 		 */
 		if (!map->refs && !map->ctx_refs && !map->dma_handle_refs)
 			hlist_del_init(&map->hn);
@@ -1308,7 +1303,7 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 			dma_free_attrs(me->dev, map->size, (void *)map->va,
 			(dma_addr_t)map->phys, (unsigned long)map->attr);
 		}
-	} else if (map->flags & FASTRPC_DMAHANDLE_NOMAP) {
+	} else if (map->flags == FASTRPC_DMAHANDLE_NOMAP) {
 		trace_fastrpc_dma_unmap(cid, map->phys, map->size);
 		if (!IS_ERR_OR_NULL(map->table))
 			dma_buf_unmap_attachment(map->attach, map->table,
@@ -1393,7 +1388,6 @@ static int fastrpc_mmap_create(struct fastrpc_file *fl, int fd,
 	unsigned long flags;
 	int err = 0, vmid, sgl_index = 0;
 	struct scatterlist *sgl = NULL;
-	bool take_ref = true;
 
 	if (!fl) {
 		err = -EBADF;
@@ -1407,9 +1401,7 @@ static int fastrpc_mmap_create(struct fastrpc_file *fl, int fd,
 	}
 	chan = &apps->channel[cid];
 
-	if (mflags & FASTRPC_MAP_DMA_HANDLE)
-		take_ref = false;
-	if (!fastrpc_mmap_find(fl, fd, va, len, mflags, take_ref, ppmap))
+	if (!fastrpc_mmap_find(fl, fd, va, len, mflags, 1, ppmap))
 		return 0;
 	map = kzalloc(sizeof(*map), GFP_KERNEL);
 	VERIFY(err, !IS_ERR_OR_NULL(map));
@@ -1447,13 +1439,7 @@ static int fastrpc_mmap_create(struct fastrpc_file *fl, int fd,
 			if (err)
 				goto bail;
 		}
-	} else if (mflags & FASTRPC_DMAHANDLE_NOMAP) {
-		if (map->attr & FASTRPC_ATTR_KEEP_MAP) {
-			ADSPRPC_ERR("Invalid attribute 0x%x for fd %d\n",
-				map->attr, fd);
-			err = -EINVAL;
-			goto bail;
-		}
+	} else if (mflags == FASTRPC_DMAHANDLE_NOMAP) {
 		VERIFY(err, !IS_ERR_OR_NULL(map->buf = dma_buf_get(fd)));
 		if (err) {
 			ADSPRPC_ERR("dma_buf_get failed for fd %d ret %ld\n",
@@ -2507,10 +2493,10 @@ static int get_args(uint32_t kernel, struct smq_invoke_ctx *ctx)
 	handles = REMOTE_SCALARS_INHANDLES(sc) + REMOTE_SCALARS_OUTHANDLES(sc);
 	mutex_lock(&ctx->fl->map_mutex);
 	for (i = bufs; i < bufs + handles; i++) {
-		int dmaflags = FASTRPC_MAP_DMA_HANDLE;
+		int dmaflags = 0;
 
 		if (ctx->attrs && (ctx->attrs[i] & FASTRPC_ATTR_NOMAP))
-			dmaflags |= FASTRPC_DMAHANDLE_NOMAP;
+			dmaflags = FASTRPC_DMAHANDLE_NOMAP;
 		if (ctx->fds && (ctx->fds[i] != -1))
 			err = fastrpc_mmap_create(ctx->fl, ctx->fds[i],
 					FASTRPC_ATTR_NOVA, 0, 0, dmaflags,
@@ -2583,8 +2569,8 @@ static int get_args(uint32_t kernel, struct smq_invoke_ctx *ctx)
 	totallen = ALIGN(totallen, BALIGN) + copylen;
 
 	/* allocate non -ion copy buffer */
-	/* Checking if copylen can be accomodated in metalen*/
-	/*if not allocating new buffer */
+	/* Checking if copylen can be accomodated in metalen */
+	/* if not allocating new buffer */
 	if (totallen <= (size_t)buf_page_size(metalen)) {
 		args = (uintptr_t)ctx->buf->virt + metalen;
 		ctx->copybuf = ctx->buf;
@@ -2671,12 +2657,11 @@ static int get_args(uint32_t kernel, struct smq_invoke_ctx *ctx)
 		if (ctx->maps[i]) {
 			/* check if map still exist */
 			if (!fastrpc_mmap_find(ctx->fl, ctx->fds[i], 0, 0,
-				0, false, &mmap)) {
+				0, 0, &mmap)) {
 				if (mmap) {
 					pages[i].addr = mmap->phys;
 					pages[i].size = mmap->size;
 				}
-
 			} else {
 				/* map already freed by some other call */
 				mutex_unlock(&ctx->fl->map_mutex);
@@ -2886,7 +2871,7 @@ static int put_args(uint32_t kernel, struct smq_invoke_ctx *ctx,
 		if (!fdlist[i])
 			break;
 		if (!fastrpc_mmap_find(ctx->fl, (int)fdlist[i], 0, 0,
-					0, false, &mmap)) {
+					0, 0, &mmap)) {
 			if (mmap && mmap->dma_handle_refs) {
 				mmap->dma_handle_refs = 0;
 				fastrpc_mmap_free(mmap, 0);
@@ -3369,15 +3354,6 @@ static int fastrpc_internal_invoke(struct fastrpc_file *fl, uint32_t mode,
 	inv_args(ctx);
 	PERF_END);
 
-	/*
-	 * Store submission timestamp in ctx before sending to DSP.
-	 * For async invokes, perf->invoke will be updated in the collector
-	 * thread (fastrpc_wait_on_async_queue) where ctx is still valid,
-	 * measuring full end-to-end latency consistent with the sync path.
-	 */
-	if (fl->profile && isasyncinvoke)
-		ctx->invoke_start_time = invoket;
-
 	PERF(fl->profile, GET_COUNTER(perf_counter, PERF_LINK),
 	VERIFY(err, 0 == (err = fastrpc_invoke_send(ctx,
 		kernel, invoke->handle)));
@@ -3439,6 +3415,9 @@ static int fastrpc_internal_invoke(struct fastrpc_file *fl, uint32_t mode,
 		err = -ECONNRESET;
 
 invoke_end:
+	if (fl->profile && !interrupted && isasyncinvoke)
+		fastrpc_update_invoke_count(invoke->handle, perf_counter,
+						&invoket);
 	return err;
 }
 
@@ -3508,15 +3487,6 @@ bail:
 		async_res->result = ierr;
 	if (ctx) {
 		if (fl->profile && ctx->perf && ctx->handle > FASTRPC_STATIC_HANDLE_MAX) {
-			/*
-			 * Update invoke/count perf counters here where ctx->perf is
-			 * guaranteed valid. This measures full end-to-end async latency
-			 * (submit → DSP → collect), consistent with the sync path.
-			 * invoke_start_time was stored in ctx before fastrpc_invoke_send
-			 * in fastrpc_internal_invoke.
-			 */
-			fastrpc_update_invoke_count(ctx->handle, perf_counter,
-				&ctx->invoke_start_time);
 			trace_fastrpc_perf_counters(ctx->handle, ctx->sc,
 			ctx->perf->count, ctx->perf->flush, ctx->perf->map,
 			ctx->perf->copy, ctx->perf->link, ctx->perf->getargs,
@@ -4941,6 +4911,7 @@ static int fastrpc_internal_munmap(struct fastrpc_file *fl,
 	mutex_lock(&fl->map_mutex);
 	fastrpc_mmap_free(map, 0);
 	mutex_unlock(&fl->map_mutex);
+
 bail:
 	if (err && map) {
 		mutex_lock(&fl->map_mutex);
@@ -4981,7 +4952,7 @@ static int fastrpc_internal_munmap_fd(struct fastrpc_file *fl,
 	}
 	mutex_lock(&fl->internal_map_mutex);
 	mutex_lock(&fl->map_mutex);
-	err = fastrpc_mmap_find(fl, ud->fd, ud->va, ud->len, 0, false, &map);
+	err = fastrpc_mmap_find(fl, ud->fd, ud->va, ud->len, 0, 0, &map);
 	if (err) {
 		ADSPRPC_ERR(
 			"mapping not found to unmap fd 0x%x, va 0x%llx, len 0x%x, err %d\n",
@@ -5006,7 +4977,6 @@ static int fastrpc_internal_mem_map(struct fastrpc_file *fl,
 	int err = 0;
 	struct fastrpc_mmap *map = NULL;
 
-	mutex_lock(&fl->internal_map_mutex);
 	VERIFY(err, fl->dsp_proc_init == 1);
 	if (err) {
 		pr_err("adsprpc: ERROR: %s: user application %s trying to map without initialization\n",
@@ -5048,7 +5018,6 @@ bail:
 			mutex_unlock(&fl->map_mutex);
 		}
 	}
-	mutex_unlock(&fl->internal_map_mutex);
 	return err;
 }
 
@@ -5058,7 +5027,6 @@ static int fastrpc_internal_mem_unmap(struct fastrpc_file *fl,
 	int err = 0;
 	struct fastrpc_mmap *map = NULL;
 
-	mutex_lock(&fl->internal_map_mutex);
 	VERIFY(err, fl->dsp_proc_init == 1);
 	if (err) {
 		pr_err("adsprpc: ERROR: %s: user application %s trying to map without initialization\n",
@@ -5108,7 +5076,6 @@ bail:
 			mutex_unlock(&fl->map_mutex);
 		}
 	}
-	mutex_unlock(&fl->internal_map_mutex);
 	return err;
 }
 

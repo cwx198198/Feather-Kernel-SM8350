@@ -1097,7 +1097,7 @@ int bpf_prog_array_copy(struct bpf_prog_array *old_array,
 		struct bpf_prog *_prog;			\
 		struct bpf_prog_array *_array;		\
 		u32 _ret = 1;				\
-		migrate_disable();			\
+		preempt_disable();			\
 		rcu_read_lock();			\
 		_array = rcu_dereference(array);	\
 		if (unlikely(check_non_null && !_array))\
@@ -1116,7 +1116,7 @@ int bpf_prog_array_copy(struct bpf_prog_array *old_array,
 		}					\
 _out:							\
 		rcu_read_unlock();			\
-		migrate_enable();			\
+		preempt_enable();			\
 		_ret;					\
 	 })
 
@@ -1150,7 +1150,7 @@ _out:							\
 		u32 ret;				\
 		u32 _ret = 1;				\
 		u32 _cn = 0;				\
-		migrate_disable();			\
+		preempt_disable();			\
 		rcu_read_lock();			\
 		_array = rcu_dereference(array);	\
 		_item = &_array->items[0];		\
@@ -1164,7 +1164,7 @@ _out:							\
 			_item++;			\
 		}					\
 		rcu_read_unlock();			\
-		migrate_enable();			\
+		preempt_enable();			\
 		if (_ret)				\
 			_ret = (_cn ? NET_XMIT_CN : NET_XMIT_SUCCESS);	\
 		else					\
@@ -1191,12 +1191,12 @@ extern struct mutex bpf_stats_enabled_mutex;
  * Use the preemption safe inc/dec variants on RT because migrate disable
  * is preemptible on RT and preemption in the middle of the RMW operation
  * might lead to inconsistent state. Use the raw variants for non RT
- * kernels as migrate_disable() maps to preempt_disable() so the slightly
+ * kernels as preempt_disable() maps to preempt_disable() so the slightly
  * more expensive save operation can be avoided.
  */
 static inline void bpf_disable_instrumentation(void)
 {
-	migrate_disable();
+	preempt_disable();
 	if (IS_ENABLED(CONFIG_PREEMPT_RT))
 		this_cpu_inc(bpf_prog_active);
 	else
@@ -1209,7 +1209,7 @@ static inline void bpf_enable_instrumentation(void)
 		this_cpu_dec(bpf_prog_active);
 	else
 		__this_cpu_dec(bpf_prog_active);
-	migrate_enable();
+	preempt_enable();
 }
 
 extern const struct file_operations bpf_map_fops;
@@ -1428,9 +1428,7 @@ struct sk_buff;
 
 struct bpf_dtab_netdev *__dev_map_lookup_elem(struct bpf_map *map, u32 key);
 struct bpf_dtab_netdev *__dev_map_hash_lookup_elem(struct bpf_map *map, u32 key);
-void __dev_flush(void);
-int dev_xdp_enqueue(struct net_device *dev, struct xdp_buff *xdp,
-		    struct net_device *dev_rx);
+void __dev_map_flush(struct bpf_map *map);
 int dev_map_enqueue(struct bpf_dtab_netdev *dst, struct xdp_buff *xdp,
 		    struct net_device *dev_rx);
 int dev_map_generic_redirect(struct bpf_dtab_netdev *dst, struct sk_buff *skb,
@@ -1438,10 +1436,34 @@ int dev_map_generic_redirect(struct bpf_dtab_netdev *dst, struct sk_buff *skb,
 bool dev_map_can_have_prog(struct bpf_map *map);
 
 struct bpf_cpu_map_entry *__cpu_map_lookup_elem(struct bpf_map *map, u32 key);
-void __cpu_map_flush(void);
+void __cpu_map_flush(struct bpf_map *map);
 int cpu_map_enqueue(struct bpf_cpu_map_entry *rcpu, struct xdp_buff *xdp,
 		    struct net_device *dev_rx);
 bool cpu_map_prog_allowed(struct bpf_map *map);
+
+#if defined(CONFIG_XDP_SOCKETS)
+struct xdp_sock;
+struct xdp_sock *__xsk_map_lookup_elem(struct bpf_map *map, u32 key);
+int __xsk_map_redirect(struct bpf_map *map, struct xdp_buff *xdp,
+		       struct xdp_sock *xs);
+void __xsk_map_flush(struct bpf_map *map);
+#else
+struct xdp_sock;
+static inline struct xdp_sock *__xsk_map_lookup_elem(struct bpf_map *map,
+						     u32 key)
+{
+	return NULL;
+}
+static inline int __xsk_map_redirect(struct bpf_map *map,
+				     struct xdp_buff *xdp,
+				     struct xdp_sock *xs)
+{
+	return -EOPNOTSUPP;
+}
+static inline void __xsk_map_flush(struct bpf_map *map)
+{
+}
+#endif
 
 /* Return map's numa specified by userspace */
 static inline int bpf_map_attr_numa_node(const union bpf_attr *attr)
@@ -1466,6 +1488,9 @@ int bpf_prog_test_run_flow_dissector(struct bpf_prog *prog,
 int bpf_prog_test_run_raw_tp(struct bpf_prog *prog,
 			     const union bpf_attr *kattr,
 			     union bpf_attr __user *uattr);
+int bpf_prog_test_run_sk_lookup(struct bpf_prog *prog,
+				const union bpf_attr *kattr,
+				union bpf_attr __user *uattr);
 bool btf_ctx_access(int off, int size, enum bpf_access_type type,
 		    const struct bpf_prog *prog,
 		    struct bpf_insn_access_aux *info);
@@ -1578,14 +1603,14 @@ static inline int bpf_obj_get_user(const char __user *pathname, int flags)
 	return -EOPNOTSUPP;
 }
 
-static inline struct net_device  *__dev_map_lookup_elem(struct bpf_map *map,
-						       u32 key)
+static inline struct bpf_dtab_netdev *__dev_map_lookup_elem(struct bpf_map *map,
+						     u32 key)
 {
 	return NULL;
 }
 
-static inline struct net_device  *__dev_map_hash_lookup_elem(struct bpf_map *map,
-							     u32 key)
+static inline struct bpf_dtab_netdev *__dev_map_hash_lookup_elem(struct bpf_map *map,
+							  u32 key)
 {
 	return NULL;
 }
@@ -1594,19 +1619,12 @@ static inline bool dev_map_can_have_prog(struct bpf_map *map)
 	return false;
 }
 
-static inline void __dev_flush(void)
+static inline void __dev_map_flush(struct bpf_map *map)
 {
 }
 
 struct xdp_buff;
 struct bpf_dtab_netdev;
-
-static inline
-int dev_xdp_enqueue(struct net_device *dev, struct xdp_buff *xdp,
-		    struct net_device *dev_rx)
-{
-	return 0;
-}
 
 static inline
 int dev_map_enqueue(struct bpf_dtab_netdev *dst, struct xdp_buff *xdp,
@@ -1630,7 +1648,7 @@ struct bpf_cpu_map_entry *__cpu_map_lookup_elem(struct bpf_map *map, u32 key)
 	return NULL;
 }
 
-static inline void __cpu_map_flush(void)
+static inline void __cpu_map_flush(struct bpf_map *map)
 {
 }
 
@@ -1676,6 +1694,13 @@ static inline int bpf_prog_test_run_tracing(struct bpf_prog *prog,
 static inline int bpf_prog_test_run_flow_dissector(struct bpf_prog *prog,
 						   const union bpf_attr *kattr,
 						   union bpf_attr __user *uattr)
+{
+	return -ENOTSUPP;
+}
+
+static inline int bpf_prog_test_run_sk_lookup(struct bpf_prog *prog,
+					      const union bpf_attr *kattr,
+					      union bpf_attr __user *uattr)
 {
 	return -ENOTSUPP;
 }

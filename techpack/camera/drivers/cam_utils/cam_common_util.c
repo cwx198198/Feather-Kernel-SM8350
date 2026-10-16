@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2019, 2021 The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/string.h>
@@ -49,60 +48,3 @@ uint32_t cam_common_util_remove_duplicate_arr(int32_t *arr, uint32_t num)
 
 	return wr_idx;
 }
-
-void cam_common_util_thread_switch_delay_detect(
-	const char *token, ktime_t scheduled_time, uint32_t threshold)
-{
-	uint64_t                         diff;
-	ktime_t                          cur_time;
-	struct timespec64                cur_ts;
-	struct timespec64                scheduled_ts;
-
-	cur_time = ktime_get();
-	diff = ktime_ms_delta(cur_time, scheduled_time);
-
-	if (diff > threshold) {
-		scheduled_ts  = ktime_to_timespec64(scheduled_time);
-		cur_ts = ktime_to_timespec64(cur_time);
-		CAM_WARN_RATE_LIMIT_CUSTOM(CAM_UTIL, 1, 1,
-			"%s delay detected %ld:%06ld cur %ld:%06ld diff %ld: threshold %d",
-			token, scheduled_ts.tv_sec,
-			scheduled_ts.tv_nsec/NSEC_PER_USEC,
-			cur_ts.tv_sec, cur_ts.tv_nsec/NSEC_PER_USEC,
-			diff, threshold);
-	}
-
-}
-
-int cam_common_mem_kdup(void **dst,
-	void *src, size_t size)
-{
-	gfp_t flag = GFP_KERNEL;
-
-	if (!src || !dst || !size) {
-		CAM_ERR(CAM_UTIL, "Invalid params src: %pK dst: %pK size: %u",
-			src, dst, size);
-		return -EINVAL;
-	}
-
-	if (!in_task())
-		flag = GFP_ATOMIC;
-
-	*dst = kzalloc(size, flag);
-	if (!*dst) {
-		CAM_ERR(CAM_UTIL, "Failed to allocate memory with size: %u", size);
-		return -ENOMEM;
-	}
-
-	memcpy(*dst, src, size);
-	CAM_DBG(CAM_UTIL, "Allocate and copy memory with size: %u", size);
-
-	return 0;
-}
-EXPORT_SYMBOL(cam_common_mem_kdup);
-
-void cam_common_mem_free(void *memory)
-{
-	kfree(memory);
-}
-EXPORT_SYMBOL(cam_common_mem_free);

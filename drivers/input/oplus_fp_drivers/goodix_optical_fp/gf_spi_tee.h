@@ -1,7 +1,7 @@
  /************************************************************************************
 ** File: - fingerprints_hal\drivers\goodix_fp\gf_spi_tee.h
 ** OPLUS_FEATURE_FINGERPRINT
-** Copyright (C), 2008-2016, OPLUS Mobile Comm Corp., Ltd
+** Copyright (C), 2008-2016, OPPO Mobile Comm Corp., Ltd
 **
 ** Description:
 **      driver definition for sensor driver

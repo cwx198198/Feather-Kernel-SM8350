@@ -2,6 +2,9 @@
 /*
  * Scheduler internal types and methods:
  */
+#ifndef __KERNEL_SCHED_H__
+#define __KERNEL_SCHED_H__
+
 #include <linux/sched.h>
 
 #include <linux/sched/autogroup.h>
@@ -74,6 +77,10 @@
 
 #include "cpupri.h"
 #include "cpudeadline.h"
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_CPUFREQ_IOWAIT_PROTECT)
+#include <linux/sched_assist/eas_opt/oplus_iowait.h>
+#endif
+
 
 #ifdef CONFIG_SCHED_DEBUG
 # define SCHED_WARN_ON(x)	WARN_ONCE(x, #x)
@@ -124,6 +131,12 @@ struct walt_task_group {
 	bool colocate;
 	/* Controls whether further updates are allowed to the colocate flag */
 	bool colocate_update_disabled;
+#ifdef OPLUS_FEATURE_POWER_EFFICIENCY
+	unsigned int window_policy;
+	bool discount_wait_time;
+	bool top_task_filter;
+	bool ed_task_filter;
+#endif
 };
 
 struct walt_root_domain {
@@ -205,6 +218,12 @@ extern cpumask_t asym_cap_sibling_cpus;
 /* task_struct::on_rq states: */
 #define TASK_ON_RQ_QUEUED	1
 #define TASK_ON_RQ_MIGRATING	2
+
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+#ifdef CONFIG_MMAP_LOCK_OPT
+extern int sysctl_uxchain_v2;
+#endif
+#endif
 
 extern __read_mostly int scheduler_running;
 
@@ -624,6 +643,8 @@ struct cfs_rq {
 	unsigned int		idle_h_nr_running; /* SCHED_IDLE */
 
 	u64			exec_clock;
+	s64			avg_vruntime;
+	u64			avg_load;
 	u64			min_vruntime;
 #ifndef CONFIG_64BIT
 	u64			min_vruntime_copy;
@@ -1153,6 +1174,14 @@ struct rq {
 	int			idle_state_idx;
 #endif
 #endif
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	struct list_head ux_thread_list;
+	raw_spinlock_t ux_list_lock;
+#endif /* defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST) */
+#ifdef CONFIG_LOCKING_PROTECT
+	int rq_locking_task;
+	struct list_head locking_thread_list;
+#endif
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -1612,9 +1641,13 @@ static inline void unregister_sched_domain_sysctl(void)
 }
 #endif
 
+extern int newidle_balance(struct rq *this_rq, struct rq_flags *rf);
+
 #else
 
 static inline void sched_ttwu_pending(void) { }
+
+static inline int newidle_balance(struct rq *this_rq, struct rq_flags *rf) { return 0; }
 
 #endif /* CONFIG_SMP */
 
@@ -1852,6 +1885,8 @@ extern const u32		sched_prio_to_wmult[40];
 #else
 #define ENQUEUE_MIGRATED	0x00
 #endif
+
+#define ENQUEUE_INITIAL		0x80
 
 #define RETRY_TASK		((void *)-1UL)
 
@@ -2143,6 +2178,11 @@ extern void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags);
 extern const_debug unsigned int sysctl_sched_nr_migrate;
 extern const_debug unsigned int sysctl_sched_migration_cost;
 
+extern unsigned int sysctl_sched_base_slice;
+
+extern u64 avg_vruntime(struct cfs_rq *cfs_rq);
+extern int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se);
+
 #ifdef CONFIG_SCHED_HRTICK
 
 /*
@@ -2230,10 +2270,15 @@ static inline unsigned long capacity_orig_of(int cpu)
 {
 	return cpu_rq(cpu)->cpu_capacity_orig;
 }
-
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+extern void sf_task_util_record(struct task_struct *p);
+#endif
 static inline unsigned long task_util(struct task_struct *p)
 {
 #ifdef CONFIG_SCHED_WALT
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	sf_task_util_record(p);
+#endif
 	return p->wts.demand_scaled;
 #endif
 	return READ_ONCE(p->se.avg.util_avg);
@@ -2648,7 +2693,11 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 	u64 clock;
 
 #ifdef CONFIG_SCHED_WALT
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_CPUFREQ_IOWAIT_PROTECT)
+	if ((sysctl_iowait_reset_ticks == 1) && (sysctl_iowait_apply_ticks==0) && (!(flags & SCHED_CPUFREQ_WALT)))
+#else
 	if (!(flags & SCHED_CPUFREQ_WALT))
+#endif
 		return;
 	clock = sched_ktime_clock();
 #else
@@ -3437,4 +3486,9 @@ static inline void walt_irq_work_queue(struct irq_work *work)
 {
 	irq_work_queue(work);
 }
+#endif
+
+#ifdef CONFIG_OPLUS_FEATURE_SCHED_ASSIST
+extern struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu);
+#endif
 #endif

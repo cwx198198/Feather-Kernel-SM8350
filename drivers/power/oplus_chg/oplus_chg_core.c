@@ -1,3 +1,6 @@
+#ifndef OPLUS_CHG_OP_DEF
+#define OPLUS_CHG_OP_DEF 1
+#endif
 #define pr_fmt(fmt) "OPLUS_CHG[CORE]: %s[%d]: " fmt, __func__, __LINE__
 
 #include <linux/module.h>
@@ -618,5 +621,5 @@ subsys_initcall(oplus_chg_class_init);
 module_exit(oplus_chg_class_exit);
 
 MODULE_DESCRIPTION("oplus charge management subsystem");
-MODULE_AUTHOR("Nick Hu <nick.hu@oneplus.com>");
+MODULE_AUTHOR("Nick Hu");
 MODULE_LICENSE("GPL");

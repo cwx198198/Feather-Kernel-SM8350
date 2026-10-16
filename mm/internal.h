@@ -35,6 +35,30 @@
 void page_writeback_init(void);
 
 vm_fault_t do_swap_page(struct vm_fault *vmf);
+#ifdef CONFIG_KSHRINK_SLABD
+extern bool wakeup_shrink_slabd(gfp_t gfp_mask, int nid,
+				 struct mem_cgroup *memcg,
+				 int priority, struct reclaim_state *reclaim_state);
+#endif
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+extern struct vm_area_struct *get_vma(struct mm_struct *mm,
+				      unsigned long addr);
+extern void put_vma(struct vm_area_struct *vma);
+
+static inline bool vma_has_changed(struct vm_fault *vmf)
+{
+	int ret = RB_EMPTY_NODE(&vmf->vma->vm_rb);
+	unsigned int seq = READ_ONCE(vmf->vma->vm_sequence.sequence);
+
+	/*
+	 * Matches both the wmb in write_seqlock_{begin,end}() and
+	 * the wmb in vma_rb_erase().
+	 */
+	smp_rmb();
+
+	return ret || seq != vmf->sequence;
+}
+#endif /* CONFIG_SPECULATIVE_PAGE_FAULT */
 
 void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *start_vma,
 		unsigned long floor, unsigned long ceiling);
@@ -398,10 +422,10 @@ static inline struct file *maybe_unlock_mmap_for_io(struct vm_fault *vmf,
 	/*
 	 * FAULT_FLAG_RETRY_NOWAIT means we don't want to wait on page locks or
 	 * anything, so we only pin the file and drop the mmap_sem if only
-	 * FAULT_FLAG_ALLOW_RETRY is set, while this is the first attempt.
+	 * FAULT_FLAG_ALLOW_RETRY is set.
 	 */
-	if (fault_flag_allow_retry_first(flags) &&
-	    !(flags & FAULT_FLAG_RETRY_NOWAIT)) {
+	if ((flags & (FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_RETRY_NOWAIT)) ==
+	    FAULT_FLAG_ALLOW_RETRY) {
 		fpin = get_file(vmf->vma->vm_file);
 		up_read(&vmf->vma->vm_mm->mmap_sem);
 	}
@@ -597,4 +621,19 @@ static inline bool is_migrate_highatomic_page(struct page *page)
 
 void setup_zone_pageset(struct zone *zone);
 extern struct page *alloc_new_node_page(struct page *page, unsigned long node);
+
+#ifdef CONFIG_KSHRINK_LRUVECD
+extern bool wakeup_kshrink_lruvecd(struct list_head *page_list);
+extern void setpage_reclaim_trylock(struct page *page);
+extern void clearpage_reclaim_trylock(struct page *page);
+extern bool page_reclaim_trylock_fail(struct page *page);
+extern bool reclaim_page_trylock(struct page *page, struct rw_semaphore *sem,
+				bool *got_lock);
+#endif /* CONFIG_KSHRINK_LRUVECD */
+#ifdef CONFIG_LOOK_AROUND
+#define PG_lookaround_ref (__NR_PAGEFLAGS + 1)
+#define SetPageLookAroundRef(page) set_bit(PG_lookaround_ref, &(page)->flags)
+#define ClearPageLookAroundRef(page) clear_bit(PG_lookaround_ref, &(page)->flags)
+#define TestClearPageLookAroundRef(page) test_and_clear_bit(PG_lookaround_ref, &(page)->flags)
+#endif
 #endif	/* __MM_INTERNAL_H */

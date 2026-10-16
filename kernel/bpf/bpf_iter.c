@@ -648,9 +648,9 @@ int bpf_iter_run_prog(struct bpf_prog *prog, void *ctx)
 	int ret;
 
 	rcu_read_lock();
-	migrate_disable();
+	preempt_disable();
 	ret = BPF_PROG_RUN(prog, ctx);
-	migrate_enable();
+	preempt_enable();
 	rcu_read_unlock();
 
 	/* bpf program can only return 0 or 1:

@@ -1,3 +1,6 @@
+#ifndef OPLUS_CHG_OP_DEF
+#define OPLUS_CHG_OP_DEF 1
+#endif
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2020-2020 Oplus. All rights reserved.
@@ -323,13 +326,6 @@ static struct device_attribute oplus_chg_mod_attrs[] = {
 	OPLUS_CHG_MOD_ATTR(fastchg_status),
 	OPLUS_CHG_MOD_ATTR(adapter_sid),
 	OPLUS_CHG_MOD_ATTR(adapter_type),
-	OPLUS_CHG_MOD_ATTR(adapter_power),
-	OPLUS_CHG_MOD_ATTR(project_power),
-	OPLUS_CHG_MOD_ATTR(device_power),
-	OPLUS_CHG_MOD_ATTR(ui_power),
-	OPLUS_CHG_MOD_ATTR(cpa_power),
-	OPLUS_CHG_MOD_ATTR(protocol_type),
-	OPLUS_CHG_MOD_ATTR(design_capacity),
 	OPLUS_CHG_MOD_ATTR(temp_region),
 	OPLUS_CHG_MOD_ATTR(con_temp1),
 	OPLUS_CHG_MOD_ATTR(con_temp2),
@@ -451,6 +447,8 @@ static struct device_attribute oplus_chg_mod_attrs[] = {
 	OPLUS_CHG_MOD_EXTERN_ATTR(voltage_now_cell),
 	OPLUS_CHG_MOD_EXTERN_ATTR(path_current),
 	OPLUS_CHG_MOD_EXTERN_ATTR(ftm_test),
+	OPLUS_CHG_MOD_EXTERN_ATTR(mutual_cmd),
+	OPLUS_CHG_MOD_EXTERN_ATTR(aging_ffc_data),
 };
 
 static struct attribute *

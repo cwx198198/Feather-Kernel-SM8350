@@ -560,20 +560,6 @@ void inet_csk_clear_xmit_timers(struct sock *sk)
 }
 EXPORT_SYMBOL(inet_csk_clear_xmit_timers);
 
-void inet_csk_clear_xmit_timers_sync(struct sock *sk)
-{
-	struct inet_connection_sock *icsk = inet_csk(sk);
-
-	/* ongoing timer handlers need to acquire socket lock. */
-	sock_not_owned_by_me(sk);
-
-	icsk->icsk_pending = icsk->icsk_ack.pending = 0;
-
-	sk_stop_timer_sync(sk, &icsk->icsk_retransmit_timer);
-	sk_stop_timer_sync(sk, &icsk->icsk_delack_timer);
-	sk_stop_timer_sync(sk, &sk->sk_timer);
-}
-
 void inet_csk_delete_keepalive_timer(struct sock *sk)
 {
 	sk_stop_timer(sk, &sk->sk_timer);
@@ -709,30 +695,20 @@ static bool reqsk_queue_unlink(struct request_sock *req)
 		found = __sk_nulls_del_node_init_rcu(req_to_sk(req));
 		spin_unlock(lock);
 	}
-
+	if (timer_pending(&req->rsk_timer) && del_timer_sync(&req->rsk_timer))
+		reqsk_put(req);
 	return found;
 }
 
-static bool __inet_csk_reqsk_queue_drop(struct sock *sk,
-					struct request_sock *req,
-					bool from_timer)
+bool inet_csk_reqsk_queue_drop(struct sock *sk, struct request_sock *req)
 {
 	bool unlinked = reqsk_queue_unlink(req);
-
-	if (!from_timer && del_timer_sync(&req->rsk_timer))
-		reqsk_put(req);
 
 	if (unlinked) {
 		reqsk_queue_removed(&inet_csk(sk)->icsk_accept_queue, req);
 		reqsk_put(req);
 	}
-
 	return unlinked;
-}
-
-bool inet_csk_reqsk_queue_drop(struct sock *sk, struct request_sock *req)
-{
-	return __inet_csk_reqsk_queue_drop(sk, req, false);
 }
 EXPORT_SYMBOL(inet_csk_reqsk_queue_drop);
 
@@ -777,7 +753,7 @@ static void reqsk_timer_handler(struct timer_list *t)
 	 * ones are about to clog our table.
 	 */
 	qlen = reqsk_queue_len(queue);
-	if ((qlen << 1) > max(8U, READ_ONCE(sk_listener->sk_max_ack_backlog))) {
+	if ((qlen << 1) > max(8U, sk_listener->sk_max_ack_backlog)) {
 		int young = reqsk_queue_len_young(queue) << 1;
 
 		while (thresh > 2) {
@@ -806,8 +782,7 @@ static void reqsk_timer_handler(struct timer_list *t)
 		return;
 	}
 drop:
-	__inet_csk_reqsk_queue_drop(sk_listener, req, true);
-	reqsk_put(req);
+	inet_csk_reqsk_queue_drop_and_put(sk_listener, req);
 }
 
 static void reqsk_queue_hash_req(struct request_sock *req,
@@ -1166,6 +1141,14 @@ struct dst_entry *inet_csk_update_pmtu(struct sock *sk, u32 mtu)
 	}
 	dst->ops->update_pmtu(dst, sk, NULL, mtu, true);
 
+//	#ifdef OPLUS_FEATURE_WIFI_MTUDETECT
+	//Add for [1066205] when receives ICMP_FRAG_NEEDED, reduces the mtu of net_device.
+	pr_err("%s: current_mtu = %d , frag_mtu = %d mtu = %d\n", __func__, dst->dev->mtu, dst_mtu(dst),mtu);
+	//do not use dst_mtu here, because dst_mtu should be changed by update_pmtu after inet_csk_rebuild_route
+	if (dst->dev->mtu > mtu && mtu > IPV6_MIN_MTU) {
+		dst->dev->mtu = mtu;
+	}
+//	#endif /* OPLUS_FEATURE_WIFI_MTUDETECT */
 	dst = __sk_dst_check(sk, 0);
 	if (!dst)
 		dst = inet_csk_rebuild_route(sk, &inet->cork.fl);

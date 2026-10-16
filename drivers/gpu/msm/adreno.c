@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 2002,2007-2021, The Linux Foundation. All rights reserved.
  * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/component.h>
 #include <linux/delay.h>
@@ -1742,12 +1743,6 @@ static int adreno_pm_suspend(struct device *dev)
 	mutex_lock(&device->mutex);
 	status = ops->pm_suspend(adreno_dev);
 	mutex_unlock(&device->mutex);
-
-	if (status)
-		return status;
-
-	kthread_flush_worker(device->events_worker);
-	flush_workqueue(kgsl_driver.mem_workqueue);
 
 	return status;
 }

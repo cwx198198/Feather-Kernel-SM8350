@@ -47,6 +47,7 @@
 #include <linux/cgroup.h>
 #include <linux/audit.h>
 #include <linux/oom.h>
+#include "../drivers/rekernel/rekernel.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -56,7 +57,20 @@
 #include <asm/unistd.h>
 #include <asm/siginfo.h>
 #include <asm/cacheflush.h>
+#if defined(OPLUS_FEATURE_HANS_FREEZE) && defined(CONFIG_OPLUS_FEATURE_HANS)
+#include <linux/hans.h>
+#endif /*OPLUS_FEATURE_HANS_FREEZE*/
 
+#ifdef CONFIG_QGKI
+#include <soc/oplus/system/oppo_process.h>
+#endif
+
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+#include <linux/sched_assist/sched_assist_common.h>
+#endif /* OPLUS_FEATURE_SCHED_ASSIST */
+
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/signal.h>
 /*
  * SLAB caches for signal bits.
  */
@@ -1080,6 +1094,14 @@ static int __send_signal(int sig, struct kernel_siginfo *info, struct task_struc
 	assert_spin_locked(&t->sighand->siglock);
 
 	result = TRACE_SIGNAL_IGNORED;
+	#ifdef CONFIG_QGKI
+        if(1) {
+                /*add the SIGKILL print log for some debug*/
+                if((sig == SIGHUP || sig == 33 || sig == SIGKILL || sig == SIGSTOP || sig == SIGABRT || sig == SIGTERM || sig == SIGCONT) && is_key_process(t)) {
+                       printk("Some other process %d:%s parent %d:%s want to send sig:%d to pid:%d tgid:%d comm:%s\n", current->pid, current->comm, current->real_parent->pid, current->real_parent->comm, sig, t->pid, t->tgid, t->comm);
+                }
+        }
+        #endif
 	if (!prepare_signal(sig, t, force))
 		goto ret;
 
@@ -1287,7 +1309,20 @@ int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p
 {
 	unsigned long flags;
 	int ret = -ESRCH;
-
+	trace_android_vh_do_send_sig_info(sig, current, p);
+#if defined(OPLUS_FEATURE_HANS_FREEZE) && defined(CONFIG_OPLUS_FEATURE_HANS)
+	hans_check_signal(p, sig);
+#endif /*OPLUS_FEATURE_HANS_FREEZE*/
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	oplus_boost_kill_signal(sig, current, p);
+#endif
+    if (start_rekernel_server() == 0) {
+ 		if (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
+     			char binder_kmsg[PACKET_SIZE];
+			snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
+     			send_netlink_message(binder_kmsg, strlen(binder_kmsg));
+ 		}
+ 	}
 	if (lock_task_sighand(p, &flags)) {
 		ret = send_signal(sig, info, p, type);
 		unlock_task_sighand(p, &flags);
@@ -1400,6 +1435,7 @@ struct sighand_struct *__lock_task_sighand(struct task_struct *tsk,
 }
 EXPORT_SYMBOL_GPL(__lock_task_sighand);
 
+#define REAPER_SZ (SZ_1M * 32 / PAGE_SIZE)
 /*
  * send signal info to all the members of a group
  */
@@ -1415,12 +1451,23 @@ int group_send_sig_info(int sig, struct kernel_siginfo *info,
 	if (!ret && sig) {
 		check_panic_on_foreground_kill(p);
 		ret = do_send_sig_info(sig, info, p, type);
+		if (!ret && sig == SIGKILL) {
+			unsigned long pages = 0;
+
+			task_lock(p);
+			if (p->mm)
+				pages = get_mm_counter(p->mm, MM_ANONPAGES) +
+					get_mm_counter(p->mm, MM_SWAPENTS);
+			task_unlock(p);
+
+			if (pages > REAPER_SZ || !strcmp(current->comm, ULMK_MAGIC) ||
+						!strcmp(current->comm, ATHENA_KILLER_MAGIC))
 		if (capable(CAP_KILL) && sig == SIGKILL)
 			if (!strcmp(current->comm, ULMK_MAGIC) ||
 				!strcmp(current->comm, PRE_KILL))
 				add_to_oom_reaper(p);
+		}
 	}
-
 	return ret;
 }
 
@@ -1829,11 +1876,10 @@ struct sigqueue *sigqueue_alloc(void)
 
 void sigqueue_free(struct sigqueue *q)
 {
-	spinlock_t *lock = &current->sighand->siglock;
 	unsigned long flags;
+	spinlock_t *lock = &current->sighand->siglock;
 
-	if (WARN_ON_ONCE(!(q->flags & SIGQUEUE_PREALLOC)))
-		return;
+	BUG_ON(!(q->flags & SIGQUEUE_PREALLOC));
 	/*
 	 * We must hold ->siglock while testing q->list
 	 * to serialize with collect_signal() or with
@@ -1861,10 +1907,7 @@ int send_sigqueue(struct sigqueue *q, struct pid *pid, enum pid_type type)
 	unsigned long flags;
 	int ret, result;
 
-	if (WARN_ON_ONCE(!(q->flags & SIGQUEUE_PREALLOC)))
-		return 0;
-	if (WARN_ON_ONCE(q->info.si_code != SI_TIMER))
-		return 0;
+	BUG_ON(!(q->flags & SIGQUEUE_PREALLOC));
 
 	ret = -1;
 	rcu_read_lock();
@@ -1883,6 +1926,7 @@ int send_sigqueue(struct sigqueue *q, struct pid *pid, enum pid_type type)
 		 * If an SI_TIMER entry is already queue just increment
 		 * the overrun count.
 		 */
+		BUG_ON(q->info.si_code != SI_TIMER);
 		q->info.si_overrun++;
 		result = TRACE_SIGNAL_ALREADY_PENDING;
 		goto out;

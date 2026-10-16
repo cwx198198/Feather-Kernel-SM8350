@@ -11,7 +11,10 @@
 
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
 #include "oplus_cam_sensor_core.h"
+#include "cam_compat.h"
+static bool gProbe_done;
 #endif
+
 static int cam_sensor_subdev_close_internal(struct v4l2_subdev *sd,
 	struct v4l2_subdev_fh *fh)
 {
@@ -25,8 +28,9 @@ static int cam_sensor_subdev_close_internal(struct v4l2_subdev *sd,
 
 	mutex_lock(&(s_ctrl->cam_sensor_mutex));
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-	if(!cam_ftm_if_do())
+	if(!cam_ftm_if_do()) {
 		cam_sensor_shutdown(s_ctrl);
+	}
 #else
 	cam_sensor_shutdown(s_ctrl);
 #endif
@@ -70,7 +74,7 @@ static long cam_sensor_subdev_ioctl(struct v4l2_subdev *sd,
 	case VIDIOC_CAM_FTM_POWNER_UP:
 		rc = cam_ftm_power_up(s_ctrl);
 		break;
-	case VIDIOC_CAM_SENSOR_STATR:
+	case VIDIOC_CAM_SENSOR_START:
 		rc = cam_sensor_start(s_ctrl);
 		break;
 	case VIDIOC_CAM_SENSOR_STOP:
@@ -208,9 +212,6 @@ static int32_t cam_sensor_driver_i2c_probe(struct i2c_client *client,
 	s_ctrl->is_probe_succeed = 0;
 	s_ctrl->last_flush_req = 0;
 
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	CAM_INFO(CAM_SENSOR, "calling sensor parse");
-#endif
 	rc = cam_sensor_parse_dt(s_ctrl);
 	if (rc < 0) {
 		CAM_ERR(CAM_SENSOR, "cam_sensor_parse_dt rc %d", rc);
@@ -242,6 +243,13 @@ static int32_t cam_sensor_driver_i2c_probe(struct i2c_client *client,
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.streamon_settings.list_head));
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.streamoff_settings.list_head));
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.read_settings.list_head));
+
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	mutex_init(&(s_ctrl->sensor_power_state_mutex));
+	mutex_init(&(s_ctrl->sensor_initsetting_mutex));
+	s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
+	s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
+#endif
 
 	for (i = 0; i < MAX_PER_FRAME_ARRAY; i++) {
 		INIT_LIST_HEAD(&(s_ctrl->i2c_data.per_frame[i].list_head));
@@ -298,9 +306,6 @@ static int cam_sensor_component_bind(struct device *dev,
 
 	s_ctrl->io_master_info.master_type = CCI_MASTER;
 
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	CAM_INFO(CAM_SENSOR, "calling parse_dt");
-#endif
 	rc = cam_sensor_parse_dt(s_ctrl);
 	if (rc < 0) {
 		CAM_ERR(CAM_SENSOR, "failed: cam_sensor_parse_dt rc %d", rc);
@@ -335,12 +340,6 @@ static int cam_sensor_component_bind(struct device *dev,
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.streamon_settings.list_head));
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.streamoff_settings.list_head));
 	INIT_LIST_HEAD(&(s_ctrl->i2c_data.read_settings.list_head));
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-        mutex_init(&(s_ctrl->sensor_power_state_mutex));
-        mutex_init(&(s_ctrl->sensor_initsetting_mutex));
-        s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
-        s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
-#endif
 
 	for (i = 0; i < MAX_PER_FRAME_ARRAY; i++) {
 		INIT_LIST_HEAD(&(s_ctrl->i2c_data.per_frame[i].list_head));
@@ -456,6 +455,9 @@ static int32_t cam_sensor_driver_platform_probe(
 	if (rc)
 		CAM_ERR(CAM_SENSOR, "failed to add component rc: %d", rc);
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	gProbe_done = true;
+#endif
 	return rc;
 }
 
@@ -490,6 +492,10 @@ int cam_sensor_driver_init(void)
 {
 	int32_t rc = 0;
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	void *drv_ptr = NULL;
+	gProbe_done = false;
+#endif
 	rc = platform_driver_register(&cam_sensor_platform_driver);
 	if (rc < 0) {
 		CAM_ERR(CAM_SENSOR, "platform_driver_register Failed: rc = %d",
@@ -501,6 +507,13 @@ int cam_sensor_driver_init(void)
 	if (rc)
 		CAM_ERR(CAM_SENSOR, "i2c_add_driver failed rc = %d", rc);
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	if (gProbe_done == false) {
+		CAM_ERR(CAM_SENSOR, "%s deferred probe", cam_sensor_platform_driver.driver.name);
+		drv_ptr = (void*)&(cam_sensor_platform_driver.driver);
+		dev_defer_supplier_debug(drv_ptr);
+	}
+#endif
 	return rc;
 }
 

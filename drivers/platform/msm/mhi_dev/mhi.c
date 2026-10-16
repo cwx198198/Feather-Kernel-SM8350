@@ -39,7 +39,7 @@
 /* Wait time on the device for Host to set BHI_INTVEC */
 #define MHI_BHI_INTVEC_MAX_CNT			200
 #define MHI_BHI_INTVEC_WAIT_MS		50
-#define MHI_WAKEUP_TIMEOUT_CNT		25
+#define MHI_WAKEUP_TIMEOUT_CNT		20
 #define MHI_MASK_CH_EV_LEN		32
 #define MHI_RING_CMD_ID			0
 #define MHI_RING_PRIMARY_EVT_ID		1
@@ -102,38 +102,6 @@ static DECLARE_COMPLETION(read_from_host);
 static DECLARE_COMPLETION(write_to_host);
 static DECLARE_COMPLETION(transfer_host_to_device);
 static DECLARE_COMPLETION(transfer_device_to_host);
-
-/*
- * mhi_dev_get_msi_config () - Fetch the MSI config from
- * PCIe and set the msi_disable flag accordingly
- *
- * @phandle : phandle structure
- * @cfg :     PCIe MSI config structure
- */
-static int mhi_dev_get_msi_config(struct ep_pcie_hw *phandle,
-					struct ep_pcie_msi_config *cfg)
-{
-	int rc;
-
-	/*
-	 * Fetching MSI config to read the MSI capability and setting the
-	 * msi_disable flag based on it.
-	 */
-	rc = ep_pcie_get_msi_config(phandle, cfg);
-	if (rc == -EOPNOTSUPP) {
-		mhi_log(MHI_MSG_VERBOSE, "MSI is disabled\n");
-		mhi_ctx->msi_disable = true;
-	} else if (!rc) {
-		mhi_ctx->msi_disable = false;
-	} else {
-		mhi_log(MHI_MSG_ERROR,
-			"Error retrieving pcie msi logic\n");
-		return rc;
-	}
-
-	mhi_log(MHI_MSG_VERBOSE, "msi_disable = %d\n", mhi_ctx->msi_disable);
-	return 0;
-}
 
 /*
  * mhi_dev_ring_cache_completion_cb () - Call back function called
@@ -312,15 +280,11 @@ static int mhi_dev_schedule_msi_ipa(struct mhi_dev *mhi, struct event_req *ereq)
 	union mhi_dev_ring_ctx *ctx;
 	int rc;
 
-	rc = mhi_dev_get_msi_config(mhi->phandle, &cfg);
+	rc = ep_pcie_get_msi_config(mhi->phandle, &cfg);
 	if (rc) {
 		mhi_log(MHI_MSG_ERROR, "Error retrieving pcie msi logic\n");
 		return rc;
 	}
-
-	/* If MSI is disabled, bailing out */
-	if (mhi_ctx->msi_disable)
-		return 0;
 
 	ctx = (union mhi_dev_ring_ctx *)&mhi->ev_ctx_cache[ereq->event_ring];
 
@@ -371,24 +335,6 @@ static void mhi_dev_event_rd_offset_completion_cb(void *req)
 	if (ereq->event_rd_dma)
 		dma_unmap_single(&mhi_ctx->pdev->dev, ereq->event_rd_dma,
 		sizeof(uint64_t), DMA_TO_DEVICE);
-
-	/*
-	 * The mhi_dev_cmd_event_msi_cb and mhi_dev_event_msi_cb APIs does
-	 * add back the flushed events space to the event buffer and returns
-	 * the event req back to the list. These are registered in the API
-	 * mhi_dev_schedule_msi_ipa and get invoked when MSI triggering is
-	 * complete.
-	 * In the case of MSI being disabled by the host, these callbacks will
-	 * not get invoked as triggering MSI is suppressed from device side.
-	 * Hence, invoking these callbacks as part of this API to ensure we do
-	 * not run out on ereq buffer space in this scenario.
-	 */
-	if (mhi_ctx->msi_disable) {
-		if (ereq->is_cmd_cpl)
-			mhi_dev_cmd_event_msi_cb(ereq);
-		else
-			mhi_dev_event_msi_cb(ereq);
-	}
 }
 
 static void mhi_dev_cmd_event_msi_cb(void *req)
@@ -468,15 +414,12 @@ static int mhi_trigger_msi_edma(struct mhi_dev_ring *ring, u32 idx)
 	unsigned long flags;
 
 	if (!mhi_ctx->msi_lower) {
-		rc = mhi_dev_get_msi_config(mhi_ctx->phandle, &cfg);
+		rc = ep_pcie_get_msi_config(mhi_ctx->phandle, &cfg);
 		if (rc) {
-			mhi_log(MHI_MSG_ERROR, "Error retrieving pcie msi logic\n");
+			mhi_log(MHI_MSG_ERROR,
+					"Error retrieving pcie msi logic\n");
 			return rc;
 		}
-
-		/* If MSI is disabled, bailing out */
-		if (mhi_ctx->msi_disable)
-			return 0;
 
 		mhi_ctx->msi_data = cfg.data;
 		mhi_ctx->msi_lower = cfg.lower;
@@ -1481,9 +1424,10 @@ static int mhi_hwc_init(struct mhi_dev *mhi)
 	}
 
 	/* Call IPA HW_ACC Init with MSI Address and db routing info */
-	rc = mhi_dev_get_msi_config(mhi_ctx->phandle, &cfg);
+	rc = ep_pcie_get_msi_config(mhi_ctx->phandle, &cfg);
 	if (rc) {
-		mhi_log(MHI_MSG_ERROR, "Error retrieving pcie msi logic\n");
+		mhi_log(MHI_MSG_ERROR,
+			"Error retrieving pcie msi logic\n");
 		return rc;
 	}
 
@@ -1506,7 +1450,6 @@ static int mhi_hwc_init(struct mhi_dev *mhi)
 	ipa_init_params.msi.mask = ((1 << cfg.msg_num) - 1);
 	ipa_init_params.first_er_idx = erdb_cfg.base;
 	ipa_init_params.first_ch_idx = HW_CHANNEL_BASE;
-	ipa_init_params.disable_msi = mhi_ctx->msi_disable;
 
 	if (mhi_ctx->config_iatu)
 		ipa_init_params.mmio_addr =
@@ -1698,7 +1641,7 @@ int mhi_dev_send_event(struct mhi_dev *mhi, int evnt_ring,
 	struct ep_pcie_msi_config cfg;
 	struct mhi_addr transfer_addr;
 
-	rc = mhi_dev_get_msi_config(mhi->phandle, &cfg);
+	rc = ep_pcie_get_msi_config(mhi->phandle, &cfg);
 	if (rc) {
 		mhi_log(MHI_MSG_ERROR, "Error retrieving pcie msi logic\n");
 		return rc;
@@ -2278,12 +2221,6 @@ static int mhi_dev_process_tre_ring(struct mhi_dev *mhi,
 	ch = &mhi->ch[ring->id - mhi->ch_ring_start];
 	reason.ch_id = ch->ch_id;
 	reason.reason = MHI_DEV_TRE_AVAILABLE;
-	/*
-	 * Save lowest value of tre_len to split packets in UCI layer
-	 * for write request of size more than tre_len.
-	 */
-	if (!ch->tre_size || ch->tre_size > el->tre.len)
-		ch->tre_size = el->tre.len;
 
 	/* Invoke a callback to let the client know its data is ready.
 	 * Copy this event to the clients context so that it can be
@@ -3189,7 +3126,6 @@ static int mhi_dev_alloc_evt_buf_evt_req(struct mhi_dev *mhi,
 {
 	int rc;
 	uint32_t size, i;
-	struct event_req *req, *tmp;
 
 	size = mhi_dev_get_evt_ring_size(mhi, ch->ch_id);
 
@@ -3208,14 +3144,7 @@ static int mhi_dev_alloc_evt_buf_evt_req(struct mhi_dev *mhi,
 	 * they were allocated with a different size
 	 */
 	if (ch->evt_buf_size) {
-		list_for_each_entry_safe(req, tmp, &ch->event_req_buffers, list) {
-			list_del(&req->list);
-			kfree(req);
-		}
-		list_for_each_entry_safe(req, tmp, &ch->flush_event_req_buffers, list) {
-			list_del(&req->list);
-			kfree(req);
-		}
+		kfree(ch->ereqs);
 		kfree(ch->tr_events);
 	}
 	/*
@@ -3229,8 +3158,14 @@ static int mhi_dev_alloc_evt_buf_evt_req(struct mhi_dev *mhi,
 	mhi_log(MHI_MSG_INFO,
 		"ch_id:%d evt buf size is %d\n", ch->ch_id, ch->evt_buf_size);
 
-	INIT_LIST_HEAD(&ch->event_req_buffers);
-	INIT_LIST_HEAD(&ch->flush_event_req_buffers);
+	/* Allocate event requests */
+	ch->ereqs = kcalloc(ch->evt_req_size, sizeof(*ch->ereqs), GFP_KERNEL);
+	if (!ch->ereqs) {
+		mhi_log(MHI_MSG_ERROR,
+			"Failed to alloc ereqs for ch_id:%d\n", ch->ch_id);
+		rc = -ENOMEM;
+		goto free_ereqs;
+	}
 
 	/* Allocate buffers to queue transfer completion events */
 	ch->tr_events = kcalloc(ch->evt_buf_size, sizeof(*ch->tr_events),
@@ -3243,13 +3178,11 @@ static int mhi_dev_alloc_evt_buf_evt_req(struct mhi_dev *mhi,
 		goto free_ereqs;
 	}
 
-	/* Allocate event requests */
-	for (i = 0; i < ch->evt_req_size; ++i) {
-		req = kzalloc(sizeof(struct event_req), GFP_KERNEL);
-		if (!req)
-			goto free_ereqs;
-		list_add_tail(&req->list, &ch->event_req_buffers);
-	}
+	/* Organize event flush requests into a linked list */
+	INIT_LIST_HEAD(&ch->event_req_buffers);
+	INIT_LIST_HEAD(&ch->flush_event_req_buffers);
+	for (i = 0; i < ch->evt_req_size; ++i)
+		list_add_tail(&ch->ereqs[i].list, &ch->event_req_buffers);
 
 	ch->curr_ereq =
 		container_of(ch->event_req_buffers.next,
@@ -3267,13 +3200,8 @@ static int mhi_dev_alloc_evt_buf_evt_req(struct mhi_dev *mhi,
 	return 0;
 
 free_ereqs:
-	if (!list_empty(&ch->event_req_buffers)) {
-		list_for_each_entry_safe(req, tmp, &ch->event_req_buffers, list) {
-			list_del(&req->list);
-			kfree(req);
-		}
-	}
-	kfree(ch->tr_events);
+	kfree(ch->ereqs);
+	ch->ereqs = NULL;
 	ch->evt_buf_size = 0;
 	ch->evt_req_size = 0;
 
@@ -3481,7 +3409,7 @@ int mhi_dev_read_channel(struct mhi_req *mreq)
 	uint64_t read_from_loc;
 	ssize_t bytes_read = 0;
 	size_t write_to_loc = 0;
-	uint32_t usr_buf_remaining, tre_size;
+	uint32_t usr_buf_remaining;
 	int td_done = 0, rc = 0;
 	struct mhi_dev_client *handle_client;
 
@@ -3524,9 +3452,10 @@ int mhi_dev_read_channel(struct mhi_req *mreq)
 		}
 
 		el = &ring->ring_cache[ring->rd_offset];
-		mhi_log(MHI_MSG_VERBOSE,
-				"TRE.PTR: 0x%llx, TRE.LEN: 0x%x, rd offset: %lu\n",
-				el->tre.data_buf_ptr, el->tre.len, ring->rd_offset);
+		mhi_log(MHI_MSG_VERBOSE, "evtptr : 0x%llx\n",
+						el->tre.data_buf_ptr);
+		mhi_log(MHI_MSG_VERBOSE, "evntlen : 0x%x, offset:%lu\n",
+						el->tre.len, ring->rd_offset);
 
 		if (ch->tre_loc) {
 			bytes_to_read = min(usr_buf_remaining,
@@ -3545,15 +3474,17 @@ int mhi_dev_read_channel(struct mhi_req *mreq)
 
 
 			ch->tre_loc = el->tre.data_buf_ptr;
-			tre_size = el->tre.len;
-			ch->tre_bytes_left = el->tre.len;
-			mhi_log(MHI_MSG_VERBOSE, "user_buf_remaining %d, tre_size %d\n",
-					usr_buf_remaining, el->tre.len);
-			bytes_to_read = min(usr_buf_remaining, tre_size);
+			ch->tre_size = el->tre.len;
+			ch->tre_bytes_left = ch->tre_size;
+
+			mhi_log(MHI_MSG_VERBOSE,
+			"user_buf_remaining %d, ch->tre_size %d\n",
+			usr_buf_remaining, ch->tre_size);
+			bytes_to_read = min(usr_buf_remaining, ch->tre_size);
 		}
 
 		bytes_read += bytes_to_read;
-		addr_offset = el->tre.len - ch->tre_bytes_left;
+		addr_offset = ch->tre_size - ch->tre_bytes_left;
 		read_from_loc = ch->tre_loc + addr_offset;
 		write_to_loc = (size_t) mreq->buf +
 			(mreq->len - usr_buf_remaining);
@@ -3828,19 +3759,16 @@ static int mhi_dev_recover(struct mhi_dev *mhi)
 		mhi_log(MHI_MSG_VERBOSE, "mhi_state = 0x%X, reset = %d\n",
 				state, mhi_reset);
 
-		if (mhi_ctx->msi_disable)
-			goto poll_for_reset;
-
 		rc = mhi_dev_mmio_read(mhi, BHI_INTVEC, &bhi_intvec);
 		if (rc)
 			return rc;
 
 		while (bhi_intvec == 0xffffffff &&
-			bhi_max_cnt < MHI_BHI_INTVEC_MAX_CNT) {
+				bhi_max_cnt < MHI_BHI_INTVEC_MAX_CNT) {
 			/* Wait for Host to set the bhi_intvec */
 			msleep(MHI_BHI_INTVEC_WAIT_MS);
 			mhi_log(MHI_MSG_VERBOSE,
-				"Wait for Host to set BHI_INTVEC\n");
+					"Wait for Host to set BHI_INTVEC\n");
 			rc = mhi_dev_mmio_read(mhi, BHI_INTVEC, &bhi_intvec);
 			if (rc) {
 				mhi_log(MHI_MSG_ERROR,
@@ -3852,12 +3780,12 @@ static int mhi_dev_recover(struct mhi_dev *mhi)
 
 		if (bhi_max_cnt == MHI_BHI_INTVEC_MAX_CNT) {
 			mhi_log(MHI_MSG_ERROR,
-				"Host failed to set BHI_INTVEC\n");
+					"Host failed to set BHI_INTVEC\n");
 			return -EINVAL;
 		}
 
 		if (bhi_intvec != 0xffffffff) {
-			/* Indicate the host that device is ready */
+			/* Indicate the host that the device is ready */
 			rc = ep_pcie_trigger_msi(mhi->phandle, bhi_intvec);
 			if (rc) {
 				mhi_log(MHI_MSG_ERROR, "error sending msi\n");
@@ -3865,7 +3793,6 @@ static int mhi_dev_recover(struct mhi_dev *mhi)
 			}
 		}
 
-poll_for_reset:
 		/* Poll for the host to set the reset bit */
 		rc = mhi_dev_mmio_get_mhi_state(mhi, &state, &mhi_reset);
 		if (rc) {
@@ -3935,9 +3862,6 @@ static void mhi_dev_enable(struct work_struct *work)
 		mhi_log(MHI_MSG_VERBOSE,
 			"Cleared reset before waiting for M0\n");
 	}
-
-	if (ep_pcie_get_linkstatus(mhi->phandle) != EP_PCIE_LINK_ENABLED)
-		mhi_log(MHI_MSG_ERROR, "warning: PCIe BME unset error");
 
 	while (state != MHI_DEV_M0_STATE &&
 		((max_cnt < MHI_SUSPEND_TIMEOUT) || mhi->no_m0_timeout)) {
@@ -4389,7 +4313,6 @@ static void mhi_dev_reinit(struct work_struct *work)
 static int mhi_dev_resume_mmio_mhi_init(struct mhi_dev *mhi_ctx)
 {
 	struct platform_device *pdev;
-	struct ep_pcie_msi_config cfg;
 	int rc = 0;
 
 	/*
@@ -4435,12 +4358,6 @@ static int mhi_dev_resume_mmio_mhi_init(struct mhi_dev *mhi_ctx)
 		mhi_log(MHI_MSG_ERROR,
 				"PCIe driver get handle failed.\n");
 		return -EINVAL;
-	}
-
-	rc = mhi_dev_get_msi_config(mhi_ctx->phandle, &cfg);
-	if (rc) {
-		mhi_log(MHI_MSG_ERROR, "Error retrieving pcie msi logic\n");
-		return rc;
 	}
 
 	rc = mhi_dev_recover(mhi_ctx);

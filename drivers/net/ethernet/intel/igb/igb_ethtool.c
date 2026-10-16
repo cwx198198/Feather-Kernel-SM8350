@@ -2070,8 +2070,11 @@ static void igb_diag_test(struct net_device *netdev,
 	} else {
 		dev_info(&adapter->pdev->dev, "online testing starting\n");
 
-		if (igb_link_test(adapter, &data[TEST_LINK]))
+		/* PHY is powered down when interface is down */
+		if (if_running && igb_link_test(adapter, &data[TEST_LINK]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
+		else
+			data[TEST_LINK] = 0;
 
 		/* Online tests aren't run; pass by default */
 		data[TEST_REG] = 0;
@@ -2994,15 +2997,11 @@ static int igb_add_ethtool_nfc_entry(struct igb_adapter *adapter,
 	if (err)
 		goto err_out_w_lock;
 
-	err = igb_update_ethtool_nfc_entry(adapter, input, input->sw_idx);
-	if (err)
-		goto err_out_input_filter;
+	igb_update_ethtool_nfc_entry(adapter, input, input->sw_idx);
 
 	spin_unlock(&adapter->nfc_lock);
 	return 0;
 
-err_out_input_filter:
-	igb_erase_filter(adapter, input);
 err_out_w_lock:
 	spin_unlock(&adapter->nfc_lock);
 err_out:

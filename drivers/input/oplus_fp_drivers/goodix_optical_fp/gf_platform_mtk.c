@@ -1,7 +1,7 @@
 /************************************************************************************
- ** File: - \android\vendor\oplus_app\fingerprints_hal\drivers\goodix_fp\gf_platform.c
+ ** File: - \android\vendor\oppo_app\fingerprints_hal\drivers\goodix_fp\gf_platform.c
  ** OPLUS_FEATURE_FINGERPRINT
- ** Copyright (C), 2008-2017, OPLUS Mobile Comm Corp., Ltd
+ ** Copyright (C), 2008-2017, OPPO Mobile Comm Corp., Ltd
  **
  ** Description:
  **      goodix fingerprint kernel device driver
@@ -26,7 +26,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/timer.h>
 #include <linux/err.h>
-#include <soc/oplus/oplus_project.h>
+#include <soc/oppo/oppo_project.h>
 
 #include "gf_spi_tee.h"
 

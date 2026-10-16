@@ -20,6 +20,7 @@ config OPLUS_SYSTEM_KERNEL_MTK
   help
 	define this config to Distinguish between qcom and mtk platform
 
+source "Kconfig.debug"
 #endif
 
 source "scripts/Kconfig.include"
@@ -27,6 +28,8 @@ source "scripts/Kconfig.include"
 source "init/Kconfig"
 
 source "kernel/Kconfig.freezer"
+
+source "kernel/Kconfig"
 
 source "fs/Kconfig.binfmt"
 

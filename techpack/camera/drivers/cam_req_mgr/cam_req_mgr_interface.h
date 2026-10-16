@@ -122,10 +122,6 @@ enum cam_pipeline_delay {
 #define CAM_TRIGGER_POINT_SOF     (1 << 0)
 #define CAM_TRIGGER_POINT_EOF     (1 << 1)
 #define CAM_TRIGGER_MAX_POINTS    2
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-//lanhe add
-#define CAM_TRIGGER_POINT_RDI_SOF     (1 << 3)
-#endif
 
 /**
  * enum cam_req_status
@@ -284,10 +280,6 @@ struct cam_req_mgr_add_request {
 	uint32_t skip_at_sof;
 	uint32_t skip_at_eof;
 	bool     trigger_eof;
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	//lanhe add for use RDI for sensor apply
-	bool     use_rdi_sof_apply;
-#endif
 };
 
 
@@ -328,6 +320,7 @@ struct cam_req_mgr_device_info {
  * @max_delay       : max pipeline delay on this link
  * @crm_cb          : callback funcs to communicate with req mgr
  * @trigger_id      : Unique ID provided to the triggering device
+ * @trigger_control : Trigger control for dev
  */
 struct cam_req_mgr_core_dev_link_setup {
 	int32_t                    link_enable;
@@ -336,6 +329,7 @@ struct cam_req_mgr_core_dev_link_setup {
 	enum cam_pipeline_delay    max_delay;
 	struct cam_req_mgr_crm_cb *crm_cb;
 	int32_t                    trigger_id;
+	bool                       trigger_control;
 };
 
 /**

@@ -1066,10 +1066,7 @@ static struct zspage *alloc_zspage(struct zs_pool *pool,
 
 	if (!zspage)
 		return NULL;
-
-	if (!IS_ENABLED(CONFIG_COMPACTION))
-		gfp &= ~__GFP_MOVABLE;
-
+	memset(zspage, 0, sizeof(struct zspage));
 	zspage->magic = ZSPAGE_MAGIC;
 	migrate_lock_init(zspage);
 
@@ -1486,7 +1483,14 @@ static void obj_free(struct size_class *class, unsigned long obj)
 
 	/* Insert this object in containing zspage's freelist */
 	link = (struct link_free *)(vaddr + f_offset);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE_64K_ZRAM
+	if (likely(!PageHugeObject(f_page)))
+		link->next = get_freeobj(zspage) << OBJ_TAG_BITS;
+	else
+		f_page->index = 0;
+#else
 	link->next = get_freeobj(zspage) << OBJ_TAG_BITS;
+#endif
 	kunmap_atomic(vaddr);
 	set_freeobj(zspage, f_objidx);
 	mod_zspage_inuse(zspage, -1);
@@ -2557,6 +2561,10 @@ static int __init zs_init(void)
 
 	zs_stat_init();
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE_64K_ZRAM
+	thp_zs_init();
+#endif
+
 	return 0;
 
 hp_setup_fail:
@@ -2567,6 +2575,11 @@ out:
 
 static void __exit zs_exit(void)
 {
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE_64K_ZRAM
+	thp_zs_exit();
+#endif
+
 #ifdef CONFIG_ZPOOL
 	zpool_unregister_driver(&zs_zpool_driver);
 #endif

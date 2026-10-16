@@ -230,6 +230,11 @@ enum msm_mdp_conn_property {
 	CONNECTOR_PROP_QSYNC_MIN_FPS,
 #endif
 
+#ifdef OPLUS_BUG_STABILITY
+	// Prop to store sync panel backlight level
+	CONNECTOR_PROP_SYNC_BACKLIGHT_LEVEL,
+#endif /* OPLUS_BUG_STABILITY */
+
 	/* total # of properties */
 	CONNECTOR_PROP_COUNT
 };
@@ -752,6 +757,7 @@ struct msm_resource_caps_info {
  * @display_type:       Enum for type of display
  * @is_te_using_watchdog_timer:  Boolean to indicate watchdog TE is
  *				 used instead of panel TE in cmd mode panels
+ * @switch_vsync_delay: Boolean to indicate whether panel requires extra vsync during fps switch
  * @poms_align_vsync:   poms with vsync aligned
  * @roi_caps:           Region of interest capability info
  * @qsync_min_fps	Minimum fps supported by Qsync feature
@@ -780,6 +786,7 @@ struct msm_display_info {
 
 	uint32_t display_type;
 	bool is_te_using_watchdog_timer;
+	bool switch_vsync_delay;
 	bool poms_align_vsync;
 	struct msm_roi_caps roi_caps;
 
@@ -998,8 +1005,6 @@ void __msm_fence_worker(struct work_struct *work);
 struct drm_atomic_state *msm_atomic_state_alloc(struct drm_device *dev);
 void msm_atomic_state_clear(struct drm_atomic_state *state);
 void msm_atomic_state_free(struct drm_atomic_state *state);
-
-void msm_atomic_flush_display_threads(struct msm_drm_private *priv);
 
 int msm_gem_init_vma(struct msm_gem_address_space *aspace,
 		struct msm_gem_vma *vma, int npages);

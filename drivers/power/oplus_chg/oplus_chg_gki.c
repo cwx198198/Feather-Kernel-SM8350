@@ -1,3 +1,6 @@
+#ifndef OPLUS_CHG_OP_DEF
+#define OPLUS_CHG_OP_DEF 1
+#endif
 #define pr_fmt(fmt) "OPLUS_CHG[GKI]: %s[%d]: " fmt, __func__, __LINE__
 
 #include <linux/module.h>
@@ -507,7 +510,7 @@ static int battery_psy_get_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
 		rc = oplus_chg_mod_get_property(ogdev->batt_ocm,
-			OPLUS_CHG_PROP_TIME_TO_FULL_NOW,
+			OPLUS_CHG_PROP_TIME_TO_FULL_AVG,
 			(union oplus_chg_mod_propval *)pval);
 		break;
 	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG:

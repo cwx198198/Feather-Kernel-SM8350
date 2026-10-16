@@ -28,10 +28,7 @@ int qla_nvme_register_remote(struct scsi_qla_host *vha, struct fc_port *fcport)
 		return 0;
 	}
 
-	if (qla_nvme_register_hba(vha))
-		return 0;
-
-	if (!vha->nvme_local_port)
+	if (!vha->nvme_local_port && qla_nvme_register_hba(vha))
 		return 0;
 
 	if (!(fcport->nvme_prli_service_param &
@@ -580,7 +577,7 @@ static int qla_nvme_post_cmd(struct nvme_fc_local_port *lport,
 
 	rval = qla2x00_start_nvme_mq(sp);
 	if (rval != QLA_SUCCESS) {
-		ql_dbg(ql_dbg_io + ql_dbg_verbose, vha, 0x212d,
+		ql_log(ql_log_warn, vha, 0x212d,
 		    "qla2x00_start_nvme_mq failed = %d\n", rval);
 		sp->priv = NULL;
 		priv->sp = NULL;

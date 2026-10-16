@@ -148,7 +148,7 @@ struct spi_device *g_mtk_spi_device;
 
 
 struct of_device_id anc_mtk_spi_of_match[] = {
-    { .compatible = "oplus,oplus_fp", },
+    { .compatible = "oppo,oppo_fp", },
     {}
 };
 

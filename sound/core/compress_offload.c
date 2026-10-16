@@ -51,8 +51,11 @@ static DEFINE_MUTEX(device_mutex);
 
 struct snd_compr_file {
 	unsigned long caps;
+#ifdef OPLUS_ARCH_EXTENDS
+	/* Apply CR#3693362 to fix CtsMediaAudioTestCases test fail */
 	bool use_pause_in_draining;
 	bool pause_in_draining;
+#endif /*OPLUS_ARCH_EXTENDS*/
 	struct snd_compr_stream stream;
 };
 
@@ -117,8 +120,11 @@ static int snd_compr_open(struct inode *inode, struct file *f)
 
 	INIT_DELAYED_WORK(&data->stream.error_work, error_delayed_work);
 
+#ifdef OPLUS_ARCH_EXTENDS
+	/* Apply CR#3693362 to fix CtsMediaAudioTestCases test fail */
 	data->use_pause_in_draining = false;
 	data->pause_in_draining = false;
+#endif /*OPLUS_ARCH_EXTENDS*/
 	data->stream.ops = compr->ops;
 	data->stream.direction = dirn;
 	data->stream.private_data = compr->private_data;
@@ -698,6 +704,8 @@ snd_compr_tstamp(struct snd_compr_stream *stream, unsigned long arg)
 	return ret;
 }
 
+#ifdef OPLUS_ARCH_EXTENDS
+/* Apply CR#3693362 to fix CtsMediaAudioTestCases test fail */
 /**
  * snd_compr_use_pause_in_draining - Allow pause and resume in draining state
  * @stream: compress substream to set
@@ -712,10 +720,14 @@ void snd_compr_use_pause_in_draining(struct snd_compr_stream *stream)
 	scf->use_pause_in_draining = true;
 }
 EXPORT_SYMBOL(snd_compr_use_pause_in_draining);
+#endif /*OPLUS_ARCH_EXTENDS*/
 
 static int snd_compr_pause(struct snd_compr_stream *stream)
 {
 	int retval;
+
+#ifdef OPLUS_ARCH_EXTENDS
+	/* Apply CR#3693362 to fix CtsMediaAudioTestCases test fail */
 	struct snd_compr_file *scf = container_of(stream, struct snd_compr_file, stream);
 
 	switch (stream->runtime->state) {
@@ -735,12 +747,22 @@ static int snd_compr_pause(struct snd_compr_stream *stream)
 	default:
 		return -EPERM;
 	}
+#else
+	if (stream->runtime->state != SNDRV_PCM_STATE_RUNNING)
+		return -EPERM;
+	retval = stream->ops->trigger(stream, SNDRV_PCM_TRIGGER_PAUSE_PUSH);
+	if (!retval)
+		stream->runtime->state = SNDRV_PCM_STATE_PAUSED;
+#endif /*OPLUS_ARCH_EXTENDS*/
 	return retval;
 }
 
 static int snd_compr_resume(struct snd_compr_stream *stream)
 {
 	int retval;
+
+#ifdef OPLUS_ARCH_EXTENDS
+	/* Apply CR#3693362 to fix CtsMediaAudioTestCases test fail */
 	struct snd_compr_file *scf = container_of(stream, struct snd_compr_file, stream);
 
 	switch (stream->runtime->state) {
@@ -759,6 +781,13 @@ static int snd_compr_resume(struct snd_compr_stream *stream)
 	default:
 		return -EPERM;
 	}
+#else
+	if (stream->runtime->state != SNDRV_PCM_STATE_PAUSED)
+		return -EPERM;
+	retval = stream->ops->trigger(stream, SNDRV_PCM_TRIGGER_PAUSE_RELEASE);
+	if (!retval)
+		stream->runtime->state = SNDRV_PCM_STATE_RUNNING;
+#endif /*OPLUS_ARCH_EXTENDS*/
 	return retval;
 }
 
@@ -786,7 +815,11 @@ static int snd_compr_start(struct snd_compr_stream *stream)
 static int snd_compr_stop(struct snd_compr_stream *stream)
 {
 	int retval;
+
+#ifdef OPLUS_ARCH_EXTENDS
+	/* Apply CR#3693362 to fix CtsMediaAudioTestCases test fail */
 	struct snd_compr_file *scf = container_of(stream, struct snd_compr_file, stream);
+#endif /*OPLUS_ARCH_EXTENDS*/
 
 	switch (stream->runtime->state) {
 	case SNDRV_PCM_STATE_OPEN:
@@ -799,7 +832,10 @@ static int snd_compr_stop(struct snd_compr_stream *stream)
 
 	retval = stream->ops->trigger(stream, SNDRV_PCM_TRIGGER_STOP);
 	if (!retval) {
+#ifdef OPLUS_ARCH_EXTENDS
+		/* Apply CR#3693362 to fix CtsMediaAudioTestCases test fail */
 		scf->pause_in_draining = false;
+#endif /*OPLUS_ARCH_EXTENDS*/
 		snd_compr_drain_notify(stream);
 		stream->runtime->total_bytes_available = 0;
 		stream->runtime->total_bytes_transferred = 0;

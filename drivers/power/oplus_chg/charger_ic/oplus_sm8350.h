@@ -1,3 +1,6 @@
+#ifndef OPLUS_CHG_OP_DEF
+#define OPLUS_CHG_OP_DEF 1
+#endif
 
 #ifndef __SM8350_CHARGER_H
 #define __SM8350_CHARGER_H
@@ -363,4 +366,6 @@ struct qcom_pmic {
 
 extern struct oplus_warp_chip *g_warp_chip;
 
+bool oplus_get_pon_chg(void);
+void oplus_set_pon_chg(bool flag);
 #endif /*__SM8350_CHARGER_H*/

@@ -592,7 +592,8 @@ static void *qcom_smem_get_private(struct qcom_smem *smem,
 
 			item_ptr =  uncached_entry_to_item(e);
 
-			if (WARN_ON(!IN_PARTITION_RANGE(item_ptr, entry_size, e, uncached_end)))
+			if (WARN_ON(!IN_PARTITION_RANGE(item_ptr, entry_size, e,
+								uncached_end)))
 				return ERR_PTR(-EINVAL);
 
 			if (size != NULL)
@@ -635,7 +636,8 @@ static void *qcom_smem_get_private(struct qcom_smem *smem,
 				return ERR_PTR(-EINVAL);
 
 			item_ptr =  cached_entry_to_item(e);
-			if (WARN_ON(!IN_PARTITION_RANGE(item_ptr, entry_size, cached_end, e)))
+			if (WARN_ON(!IN_PARTITION_RANGE(item_ptr, entry_size,
+							cached_end, e)))
 				return ERR_PTR(-EINVAL);
 
 			if (size != NULL)
@@ -820,7 +822,7 @@ static u32 qcom_smem_get_item_count(struct qcom_smem *smem)
 	if (IS_ERR_OR_NULL(ptable))
 		return SMEM_ITEM_COUNT;
 
-	info = (struct smem_info *)&ptable->entry[le32_to_cpu(ptable->num_entries)];
+	info = (struct smem_info *)&ptable->entry[ptable->num_entries];
 	if (memcmp(info->magic, SMEM_INFO_MAGIC, sizeof(info->magic)))
 		return SMEM_ITEM_COUNT;
 

@@ -3,7 +3,7 @@
 
 ### AnyKernel setup
 properties() { '
-kernel.string=5.4.302-Feather | SukiSU Ultra + SusFS v2.2.0 | @ozyern
+kernel.string=5.4.254 OPLUS | ColorOS 17 port kernel | @ozyern
 do.devicecheck=1
 do.modules=0
 do.systemless=1
@@ -24,7 +24,10 @@ supported.vendorpatchlevels=
 
 ### AnyKernel install
 
-## stage 1 -- boot: kernel only (this partition has no dtb on lahaina)
+## boot: kernel only
+## This tree is OnePlus's own 5.4.254 source, the same base as the stock
+## OxygenOS 14 kernel, so the stock dtb in vendor_boot and the stock dtbo
+## stay as they are. Nothing else is touched.
 BLOCK=boot;
 IS_SLOT_DEVICE=1;
 RAMDISK_COMPRESSION=auto;
@@ -33,36 +36,15 @@ PATCH_VBMETA_FLAG=auto;
 . tools/ak3-core.sh;
 
 ui_print " ";
-ui_print "Installing 5.4.302-Feather kernel to boot...";
-dump_boot;
-write_boot;
-
-## stage 2 -- vendor_boot: install the matching device tree
-## The lahaina dtb lives in vendor_boot, not boot. A 5.4.302 kernel paired
-## with the stock 5.4.254 dtb is what bootlooped at the splash, so the dtb
-## built from this same tree has to go with it.
-## flash_boot prefers $AKHOME/dtb over split_img/dtb, so shipping ./dtb is
-## enough -- it is ignored in stage 1 because boot has no dtb to replace.
-BLOCK=vendor_boot;
-IS_SLOT_DEVICE=1;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
-
-rm -f $AKHOME/Image;
-
-reset_ak;
-
-ui_print " ";
-ui_print "Installing Feather device tree to vendor_boot...";
+ui_print "Installing 5.4.254 OPLUS kernel to boot...";
 dump_boot;
 write_boot;
 
 ui_print " ";
 ui_print "-----------------------------------------";
-ui_print "  Feather Kernel 5.4.302";
-ui_print "  SukiSU Ultra 4.1.3 | SusFS v2.2.0";
-ui_print "  kernel -> boot";
-ui_print "  dtb    -> vendor_boot";
-ui_print "  dtbo   -> dtbo";
+ui_print "  5.4.254 OPLUS (ColorOS 17 port)";
+ui_print "  close_range | CAP_CHECKPOINT_RESTORE";
+ui_print "  BPF 5.10 + netbpfload compat";
+ui_print "  kernel -> boot (stock dtb/dtbo kept)";
 ui_print "-----------------------------------------";
 ui_print " ";

@@ -143,10 +143,6 @@ struct cam_isp_ctx_irq_ops {
  * @num_acked:                 Count to track acked entried for output.
  *                             If count equals the number of fence out, it means
  *                             the request has been completed.
- * @early_fence_map_index      Array which stores fence map out index for resource
- *                             which early buf done is received.
- * @flag_sync_set              Flags to track if early bufdone fence are signalled
- *                             or not
  * @num_deferred_acks:         Number of buf_dones/acks that are deferred to
  *                             handle or signalled in special scenarios.
  *                             Increment this count instead of num_acked and
@@ -167,13 +163,12 @@ struct cam_isp_ctx_req {
 	struct cam_ctx_request               *base;
 	struct cam_hw_update_entry            cfg[CAM_ISP_CTX_CFG_MAX];
 	uint32_t                              num_cfg;
-	struct cam_hw_fence_map_entry         fence_map_out[CAM_ISP_CTX_RES_MAX];
+	struct cam_hw_fence_map_entry         fence_map_out
+						[CAM_ISP_CTX_RES_MAX];
 	uint32_t                              num_fence_map_out;
 	struct cam_hw_fence_map_entry         fence_map_in[CAM_ISP_CTX_RES_MAX];
 	uint32_t                              num_fence_map_in;
 	uint32_t                              num_acked;
-	uint32_t                     early_fence_map_index[CAM_ISP_CTX_RES_MAX];
-	bool                                  flag_sync_set;
 	uint32_t                              num_deferred_acks;
 	uint32_t                  deferred_fence_map_index[CAM_ISP_CTX_RES_MAX];
 	int32_t                               bubble_report;
@@ -215,9 +210,6 @@ struct cam_isp_context_state_monitor {
 
 struct cam_isp_context_req_id_info {
 	int64_t                          last_bufdone_req_id;
-#ifdef OPLUS_FEATURE_CAMERA_COMMON //lanhe todo:
-	uint64_t                         last_rdi_req_id;
-#endif
 };
 
 /**
@@ -273,6 +265,7 @@ struct cam_isp_context_event_record {
  * @custom_enabled:            Custom HW enabled for this ctx
  * @use_frame_header_ts:       Use frame header for qtimer ts
  * @support_consumed_addr:     Indicate whether HW has last consumed addr reg
+ * @is_anchor_instance:        Indicate whether this HW is used to process anchor frame
  * @apply_in_progress          Whether request apply is in progress
  * @init_timestamp:            Timestamp at which this context is initialized
  * @isp_device_type:           ISP device type
@@ -286,9 +279,6 @@ struct cam_isp_context_event_record {
 struct cam_isp_context {
 	struct cam_context              *base;
 
-#ifdef OPLUS_FEATURE_CAMERA_COMMON //lanhe todo:
-	uint64_t                         rdi_frame_id;
-#endif
 	int64_t                          frame_id;
 	uint32_t                         frame_id_meta;
 	uint32_t                         substate_activated;
@@ -324,13 +314,16 @@ struct cam_isp_context {
 	bool                                  custom_enabled;
 	bool                                  use_frame_header_ts;
 	bool                                  support_consumed_addr;
+	bool                                  is_anchor_instance;
 	atomic_t                              apply_in_progress;
 	unsigned int                          init_timestamp;
 	uint32_t                              isp_device_type;
 	atomic_t                              rxd_epoch;
 	struct cam_req_mgr_core_workq        *workq;
 	int32_t                               trigger_id;
+	uint32_t                              apply_fail_cnt_on_bubble;
 	int64_t                               last_bufdone_err_apply_req_id;
+	bool                                  trigger_control;
 };
 
 /**

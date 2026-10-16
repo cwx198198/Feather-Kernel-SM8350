@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/bitops.h>
@@ -462,7 +461,7 @@ static struct msm_cvp_inst *cvp_get_inst_from_id(struct msm_cvp_core *core,
 retry:
 	if (mutex_trylock(&core->lock)) {
 		list_for_each_entry(inst, &core->instances, list) {
-			if (inst->sess_id == session_id) {
+			if (hash32_ptr(inst->session) == session_id) {
 				match = true;
 				break;
 			}
@@ -505,7 +504,7 @@ static int hfi_process_session_cvp_msg(u32 device_id,
 	}
 	session_id = (void *)(uintptr_t)get_msg_session_id(pkt);
 	core = list_first_entry(&cvp_driver->cores, struct msm_cvp_core, list);
-	inst = cvp_get_inst_from_id(core, (uintptr_t)session_id);
+	inst = cvp_get_inst_from_id(core, (unsigned int)session_id);
 
 	if (!inst) {
 		dprintk(CVP_ERR, "%s: invalid session\n", __func__);
@@ -563,7 +562,7 @@ static void hfi_process_sys_get_prop_image_version(
 	int req_bytes;
 
 	req_bytes = pkt->size - sizeof(*pkt);
-	if (req_bytes < (signed int)version_string_size ||
+	if (req_bytes < version_string_size ||
 			!pkt->rg_property_data[1] ||
 			pkt->num_properties > 1) {
 		dprintk(CVP_ERR, "%s: bad_pkt: %d\n", __func__, req_bytes);

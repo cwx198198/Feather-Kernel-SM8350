@@ -113,14 +113,8 @@ DEFINE_SHOW_ATTRIBUTE(binder_stats);
 int binder_state_show(struct seq_file *m, void *unused);
 DEFINE_SHOW_ATTRIBUTE(binder_state);
 
-int binder_state_hashed_show(struct seq_file *m, void *unused);
-DEFINE_SHOW_ATTRIBUTE(binder_state_hashed);
-
 int binder_transactions_show(struct seq_file *m, void *unused);
 DEFINE_SHOW_ATTRIBUTE(binder_transactions);
-
-int binder_transactions_hashed_show(struct seq_file *m, void *unused);
-DEFINE_SHOW_ATTRIBUTE(binder_transactions_hashed);
 
 int binder_transaction_log_show(struct seq_file *m, void *unused);
 DEFINE_SHOW_ATTRIBUTE(binder_transaction_log);
@@ -161,7 +155,7 @@ enum binder_stat_types {
 };
 
 struct binder_stats {
-	atomic_t br[_IOC_NR(BR_ONEWAY_SPAM_SUSPECT) + 1];
+	atomic_t br[_IOC_NR(BR_FROZEN_REPLY) + 1];
 	atomic_t bc[_IOC_NR(BC_REPLY_SG) + 1];
 	atomic_t obj_created[BINDER_STAT_COUNT];
 	atomic_t obj_deleted[BINDER_STAT_COUNT];
@@ -180,23 +174,27 @@ struct binder_work {
 	enum binder_work_type {
 		BINDER_WORK_TRANSACTION = 1,
 		BINDER_WORK_TRANSACTION_COMPLETE,
-		BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT,
 		BINDER_WORK_RETURN_ERROR,
 		BINDER_WORK_NODE,
 		BINDER_WORK_DEAD_BINDER,
 		BINDER_WORK_DEAD_BINDER_AND_CLEAR,
 		BINDER_WORK_CLEAR_DEATH_NOTIFICATION,
-#ifndef __GENKSYMS__
-		BINDER_WORK_FROZEN_BINDER,
-		BINDER_WORK_CLEAR_FREEZE_NOTIFICATION,
-#endif
 	} type;
+#ifdef CONFIG_OPLUS_BINDER_STRATEGY
+	u64 ob_begin;
+#endif
 };
 
 struct binder_error {
 	struct binder_work work;
 	uint32_t cmd;
 };
+
+#if defined(CONFIG_OPLUS_FEATURE_BINDER_STATS_ENABLE)
+#ifndef OPLUS_MAX_SERVICE_NAME_LEN
+#define OPLUS_MAX_SERVICE_NAME_LEN 32
+#endif
+#endif // #if defined(CONFIG_OPLUS_FEATURE_BINDER_STATS_ENABLE)
 
 /**
  * struct binder_node - binder node bookkeeping
@@ -299,6 +297,9 @@ struct binder_node {
 	};
 	bool has_async_transaction;
 	struct list_head async_todo;
+#if defined(CONFIG_OPLUS_FEATURE_BINDER_STATS_ENABLE)
+       char service_name[OPLUS_MAX_SERVICE_NAME_LEN];
+#endif
 };
 
 struct binder_ref_death {
@@ -309,14 +310,6 @@ struct binder_ref_death {
 	 */
 	struct binder_work work;
 	binder_uintptr_t cookie;
-};
-
-struct binder_ref_freeze {
-	struct binder_work work;
-	binder_uintptr_t cookie;
-	bool is_frozen:1;
-	bool sent:1;
-	bool resend:1;
 };
 
 /**
@@ -351,8 +344,6 @@ struct binder_ref_data {
  *               @node indicates the node must be freed
  * @death:       pointer to death notification (ref_death) if requested
  *               (protected by @node->lock)
- * @freeze:      pointer to freeze notification (ref_freeze) if requested
- *               (protected by @node->lock)
  *
  * Structure to track references from procA to target node (on procB). This
  * structure is unsafe to access without holding @proc->outer_lock.
@@ -369,7 +360,6 @@ struct binder_ref {
 	struct binder_proc *proc;
 	struct binder_node *node;
 	struct binder_ref_death *death;
-	struct binder_ref_freeze *freeze;
 };
 
 /**
@@ -411,6 +401,9 @@ enum binder_prio_state {
  * @pid                   PID of group_leader of process
  *                        (invariant after initialized)
  * @tsk                   task_struct for group_leader of process
+ *                        (invariant after initialized)
+ * @cred                  struct cred associated with the `struct file`
+ *                        in binder_open()
  *                        (invariant after initialized)
  * @deferred_work_node:   element for binder_deferred_list
  *                        (protected by binder_deferred_lock)
@@ -460,8 +453,6 @@ enum binder_prio_state {
  * @outer_lock:           no nesting under innor or node lock
  *                        Lock order: 1) outer, 2) node, 3) inner
  * @binderfs_entry:       process-specific binderfs log file
- * @oneway_spam_detection_enabled: process enabled oneway spam detection
- *                        or not
  *
  * Bookkeeping structure for binder processes
  */
@@ -474,10 +465,17 @@ struct binder_proc {
 	struct list_head waiting_threads;
 	int pid;
 	struct task_struct *tsk;
+	const struct cred *cred;
 	struct hlist_node deferred_work_node;
 	int deferred_work;
 	int outstanding_txns;
 	bool is_dead;
+
+#if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
+	int proc_type;
+	bool is_system_server;
+#endif /* defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST) */
+
 	bool is_frozen;
 	bool sync_recv;
 	bool async_recv;
@@ -497,7 +495,6 @@ struct binder_proc {
 	spinlock_t inner_lock;
 	spinlock_t outer_lock;
 	struct dentry *binderfs_entry;
-	bool oneway_spam_detection_enabled;
 };
 
 /**
@@ -506,8 +503,6 @@ struct binder_proc {
  * @cred                  struct cred associated with the `struct file`
  *                        in binder_open()
  *                        (invariant after initialized)
- * @delivered_freeze:     list of delivered freeze notification
- *                        (protected by @inner_lock)
  *
  * Extended binder_proc -- needed to add the "cred" field without
  * changing the KMI for binder_proc.
@@ -515,7 +510,6 @@ struct binder_proc {
 struct binder_proc_ext {
 	struct binder_proc proc;
 	const struct cred *cred;
-	struct list_head delivered_freeze;
 };
 
 static inline const struct cred *binder_get_cred(struct binder_proc *proc)
@@ -524,12 +518,6 @@ static inline const struct cred *binder_get_cred(struct binder_proc *proc)
 
 	eproc = container_of(proc, struct binder_proc_ext, proc);
 	return eproc->cred;
-}
-
-static inline
-struct binder_proc_ext *proc_wrapper(struct binder_proc *proc)
-{
-	return container_of(proc, struct binder_proc_ext, proc);
 }
 
 /**
@@ -642,6 +630,9 @@ struct binder_transaction {
 	 * during thread teardown
 	 */
 	spinlock_t lock;
+#if defined(CONFIG_OPLUS_FEATURE_ASYNC_BINDER_INHERIT_UX)
+	int async_ux_enable;
+#endif /* defined(CONFIG_OPLUS_FEATURE_ASYNC_BINDER_INHERIT_UX) */
 	ANDROID_VENDOR_DATA(1);
 };
 

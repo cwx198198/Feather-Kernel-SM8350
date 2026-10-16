@@ -235,7 +235,7 @@ static int red_change(struct Qdisc *sch, struct nlattr *opt,
 	q->flags = ctl->flags;
 	q->limit = ctl->limit;
 	if (child) {
-		qdisc_purge_queue(q->qdisc);
+		qdisc_tree_flush_backlog(q->qdisc);
 		old_child = q->qdisc;
 		q->qdisc = child;
 	}

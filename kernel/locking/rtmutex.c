@@ -19,7 +19,9 @@
 #include <linux/sched/wake_q.h>
 #include <linux/sched/debug.h>
 #include <linux/timer.h>
-
+#ifdef CONFIG_LOCKING_PROTECT
+#include <linux/sched_assist/sched_assist_locking.h>
+#endif
 #include "rtmutex_common.h"
 
 /*
@@ -1063,26 +1065,20 @@ static void mark_wakeup_next_waiter(struct wake_q_head *wake_q,
  *
  * Must be called with lock->wait_lock held and interrupts disabled. I must
  * have just failed to try_to_take_rt_mutex().
- *
- * When invoked from rt_mutex_start_proxy_lock() waiter::task != current !
  */
 static void remove_waiter(struct rt_mutex *lock,
 			  struct rt_mutex_waiter *waiter)
 {
 	bool is_top_waiter = (waiter == rt_mutex_top_waiter(lock));
 	struct task_struct *owner = rt_mutex_owner(lock);
-	struct task_struct *waiter_task = waiter->task;
 	struct rt_mutex *next_lock;
 
 	lockdep_assert_held(&lock->wait_lock);
 
-	if (!waiter_task) /* never enqueued */
-		return;
-
-	raw_spin_lock(&waiter_task->pi_lock);
+	raw_spin_lock(&current->pi_lock);
 	rt_mutex_dequeue(lock, waiter);
-	waiter_task->pi_blocked_on = NULL;
-	raw_spin_unlock(&waiter_task->pi_lock);
+	current->pi_blocked_on = NULL;
+	raw_spin_unlock(&current->pi_lock);
 
 	/*
 	 * Only update priority if the waiter was the highest priority
@@ -1118,7 +1114,7 @@ static void remove_waiter(struct rt_mutex *lock,
 	raw_spin_unlock_irq(&lock->wait_lock);
 
 	rt_mutex_adjust_prio_chain(owner, RT_MUTEX_MIN_CHAINWALK, lock,
-				   next_lock, NULL, waiter_task);
+				   next_lock, NULL, current);
 
 	raw_spin_lock_irq(&lock->wait_lock);
 }
@@ -1176,6 +1172,9 @@ __rt_mutex_slowlock(struct rt_mutex *lock, int state,
 {
 	int ret = 0;
 
+#ifdef CONFIG_LOCKING_PROTECT
+	update_locking_time(jiffies, false);
+#endif
 	for (;;) {
 		/* Try to acquire the lock: */
 		if (try_to_take_rt_mutex(lock, current, waiter))
@@ -1210,7 +1209,6 @@ __rt_mutex_slowlock(struct rt_mutex *lock, int state,
 }
 
 static void rt_mutex_handle_deadlock(int res, int detect_deadlock,
-				     struct rt_mutex *lock,
 				     struct rt_mutex_waiter *w)
 {
 	/*
@@ -1220,7 +1218,6 @@ static void rt_mutex_handle_deadlock(int res, int detect_deadlock,
 	if (res != -EDEADLOCK || detect_deadlock)
 		return;
 
-	raw_spin_unlock_irq(&lock->wait_lock);
 	/*
 	 * Yell lowdly and stop the task right here.
 	 */
@@ -1276,7 +1273,7 @@ rt_mutex_slowlock(struct rt_mutex *lock, int state,
 	if (unlikely(ret)) {
 		__set_current_state(TASK_RUNNING);
 		remove_waiter(lock, &waiter);
-		rt_mutex_handle_deadlock(ret, chwalk, lock, &waiter);
+		rt_mutex_handle_deadlock(ret, chwalk, &waiter);
 	}
 
 	/*
@@ -1478,6 +1475,9 @@ static inline void __rt_mutex_lock(struct rt_mutex *lock, unsigned int subclass)
 
 	mutex_acquire(&lock->dep_map, subclass, 0, _RET_IP_);
 	rt_mutex_fastlock(lock, TASK_UNINTERRUPTIBLE, rt_mutex_slowlock);
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, jiffies);
+#endif
 }
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
@@ -1526,6 +1526,10 @@ int __sched rt_mutex_lock_interruptible(struct rt_mutex *lock)
 	ret = rt_mutex_fastlock(lock, TASK_INTERRUPTIBLE, rt_mutex_slowlock);
 	if (ret)
 		mutex_release(&lock->dep_map, 1, _RET_IP_);
+#ifdef CONFIG_LOCKING_PROTECT
+	else
+		record_locking_info(current, jiffies);
+#endif
 
 	return ret;
 }
@@ -1570,6 +1574,10 @@ rt_mutex_timed_lock(struct rt_mutex *lock, struct hrtimer_sleeper *timeout)
 				       rt_mutex_slowlock);
 	if (ret)
 		mutex_release(&lock->dep_map, 1, _RET_IP_);
+#ifdef CONFIG_LOCKING_PROTECT
+	else
+		record_locking_info(current, jiffies);
+#endif
 
 	return ret;
 }
@@ -1596,6 +1604,10 @@ int __sched rt_mutex_trylock(struct rt_mutex *lock)
 	ret = rt_mutex_fasttrylock(lock, rt_mutex_slowtrylock);
 	if (ret)
 		mutex_acquire(&lock->dep_map, 0, 1, _RET_IP_);
+#ifdef CONFIG_LOCKING_PROTECT
+	else
+		record_locking_info(current, jiffies);
+#endif
 
 	return ret;
 }
@@ -1610,6 +1622,9 @@ void __sched rt_mutex_unlock(struct rt_mutex *lock)
 {
 	mutex_release(&lock->dep_map, 1, _RET_IP_);
 	rt_mutex_fastunlock(lock, rt_mutex_slowunlock);
+#ifdef CONFIG_LOCKING_PROTECT
+	record_locking_info(current, 0);
+#endif
 }
 EXPORT_SYMBOL_GPL(rt_mutex_unlock);
 
@@ -1808,7 +1823,7 @@ int rt_mutex_start_proxy_lock(struct rt_mutex *lock,
 
 	raw_spin_lock_irq(&lock->wait_lock);
 	ret = __rt_mutex_start_proxy_lock(lock, waiter, task);
-	if (unlikely(ret < 0))
+	if (unlikely(ret))
 		remove_waiter(lock, waiter);
 	raw_spin_unlock_irq(&lock->wait_lock);
 

@@ -1,3 +1,6 @@
+#ifndef OPLUS_CHG_OP_DEF
+#define OPLUS_CHG_OP_DEF 1
+#endif
 /* SPDX-License-Identifier: GPL-2.0-only  */
 /*
  * Copyright (C) 2018-2020 Oplus. All rights reserved.
@@ -20,7 +23,6 @@ struct oplus_gauge_chip {
 
 struct oplus_gauge_operations {
 	int (*get_battery_mvolts)(void);
-	int (*get_battery_ttf)(void);
 	int (*get_battery_fc)(void);
 	int (*get_battery_qm)(void);
 	int (*get_battery_pd)(void);
@@ -35,7 +37,6 @@ struct oplus_gauge_operations {
 	int (*get_battery_pc)(void);
 	int (*get_battery_qs)(void);
 	int (*get_battery_temperature)(void);
-	int (*get_batt_design_capacity)(void);
 	int (*get_batt_remaining_capacity)(void);
 	int (*get_battery_soc)(void);
 	int (*get_average_current)(void);
@@ -93,7 +94,6 @@ int oplus_gauge_get_batt_mvolts_2cell_min(void);
 int oplus_gauge_get_batt_temperature(void);
 int oplus_gauge_get_batt_soc(void);
 int oplus_gauge_get_batt_current(void);
-int oplus_gauge_get_design_capacity(void);
 int oplus_gauge_get_remaining_capacity(void);
 int oplus_gauge_get_device_type(void);
 int oplus_gauge_get_device_type_for_warp(void);
@@ -113,7 +113,6 @@ int oplus_gauge_get_prev_batt_mvolts_2cell_min(void);
 int oplus_gauge_get_prev_batt_temperature(void);
 int oplus_gauge_get_prev_batt_soc(void);
 int oplus_gauge_get_prev_batt_current(void);
-int oplus_gauge_get_batt_ttf(void);
 int oplus_gauge_get_prev_remaining_capacity(void);
 int oplus_gauge_get_prev_batt_fcc(void);
 int oplus_gauge_update_battery_dod0(void);

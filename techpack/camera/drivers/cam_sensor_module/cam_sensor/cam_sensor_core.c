@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -15,6 +14,7 @@
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
 #include "tof8801_driver.h"
 #include "oplus_cam_sensor_core.h"
+#include "oplus_cam_kevent_fb.h"
 #endif
 
 static int cam_sensor_update_req_mgr(
@@ -27,10 +27,6 @@ static int cam_sensor_update_req_mgr(
 	memset(&add_req, 0, sizeof(add_req));
 	add_req.link_hdl = s_ctrl->bridge_intf.link_hdl;
 	add_req.req_id = csl_packet->header.request_id;
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	//lanhe add
-	add_req.use_rdi_sof_apply = s_ctrl->use_rdi_sof_apply;
-#endif
 	CAM_DBG(CAM_SENSOR, " Rxed Req Id: %llu",
 		csl_packet->header.request_id);
 	add_req.dev_hdl = s_ctrl->bridge_intf.device_hdl;
@@ -344,7 +340,6 @@ static int32_t cam_sensor_i2c_pkt_parse(struct cam_sensor_ctrl_t *s_ctrl,
 	}
 
 end:
-	cam_mem_put_cpu_buf(config.packet_handle);
 	return rc;
 }
 
@@ -588,12 +583,6 @@ int32_t cam_handle_mem_ptr(uint64_t handle, struct cam_sensor_ctrl_t *s_ctrl)
 	}
 
 	for (i = 0; i < pkt->num_cmd_buf; i++) {
-		rc = cam_packet_util_validate_cmd_desc(&cmd_desc[i]);
-		if (rc) {
-			cam_mem_put_cpu_buf(handle);
-			return rc;
-		}
-
 		if (!(cmd_desc[i].length))
 			continue;
 		rc = cam_mem_get_cpu_buf(cmd_desc[i].mem_handle,
@@ -606,7 +595,6 @@ int32_t cam_handle_mem_ptr(uint64_t handle, struct cam_sensor_ctrl_t *s_ctrl)
 		if (cmd_desc[i].offset >= len) {
 			CAM_ERR(CAM_SENSOR,
 				"offset past length of buffer");
-			cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 			rc = -EINVAL;
 			goto end;
 		}
@@ -614,7 +602,6 @@ int32_t cam_handle_mem_ptr(uint64_t handle, struct cam_sensor_ctrl_t *s_ctrl)
 		if (cmd_desc[i].length > remain_len) {
 			CAM_ERR(CAM_SENSOR,
 				"Not enough buffer provided for cmd");
-			cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 			rc = -EINVAL;
 			goto end;
 		}
@@ -627,14 +614,11 @@ int32_t cam_handle_mem_ptr(uint64_t handle, struct cam_sensor_ctrl_t *s_ctrl)
 		if (rc < 0) {
 			CAM_ERR(CAM_SENSOR,
 				"Failed to parse the command Buffer Header");
-			cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 			goto end;
 		}
-		cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 	}
 
 end:
-	cam_mem_put_cpu_buf(handle);
 	return rc;
 }
 
@@ -692,32 +676,29 @@ void cam_sensor_shutdown(struct cam_sensor_ctrl_t *s_ctrl)
 	cam_sensor_release_per_frame_resource(s_ctrl);
 
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-        if (s_ctrl->sensor_state != CAM_SENSOR_INIT){
-                mutex_lock(&(s_ctrl->sensor_power_state_mutex));
-                if(s_ctrl->sensor_power_state == CAM_SENSOR_POWER_ON)
-                {
-                    rc = cam_sensor_power_down(s_ctrl);
-                    if(rc < 0) {
-                        CAM_ERR(CAM_SENSOR, "sensor power down faild!");
-                     } else {
-                        CAM_ERR(CAM_SENSOR, "sensor power down success sensor id 0x%x",s_ctrl->sensordata->slave_info.sensor_id);
-                        s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
-                        mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
-                        s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
-                        mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
-                     }
-                } else {
-                    CAM_ERR(CAM_SENSOR, "sensor have power down!");
-                    mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
-                    s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
-                    mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
-                }
-                mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
-        }
+	if (CAM_SENSOR_INIT != s_ctrl->sensor_state) {
+		mutex_lock(&(s_ctrl->sensor_power_state_mutex));
+		if (CAM_SENSOR_POWER_ON == s_ctrl->sensor_power_state) {
+			rc = cam_sensor_power_down(s_ctrl);
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR, "sensor power down faild!");
+			} else {
+				CAM_INFO(CAM_SENSOR, "sensor power down success sensor id 0x%x", s_ctrl->sensordata->slave_info.sensor_id);
+				s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
+				mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
+				s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
+				mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
+			}
+		} else {
+			CAM_ERR(CAM_SENSOR, "sensor have power down!");
+		}
+		mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+	}
 #else
 	if (s_ctrl->sensor_state != CAM_SENSOR_INIT)
 		cam_sensor_power_down(s_ctrl);
 #endif
+
 	if (s_ctrl->bridge_intf.device_hdl != -1) {
 		rc = cam_destroy_device_hdl(s_ctrl->bridge_intf.device_hdl);
 		if (rc < 0)
@@ -761,10 +742,10 @@ int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 	rc = camera_io_dev_read(
 		&(s_ctrl->io_master_info),
 		slave_info->sensor_id_reg_addr,
-		&chipid,
-		s_ctrl->sensor_probe_addr_type,
-		s_ctrl->sensor_probe_data_type);
+		&chipid, CAMERA_SENSOR_I2C_TYPE_WORD,
+		CAMERA_SENSOR_I2C_TYPE_WORD);
 #endif
+
 
 	CAM_DBG(CAM_SENSOR, "read id: 0x%x expected id 0x%x:",
 		chipid, slave_info->sensor_id);
@@ -796,10 +777,12 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 	int rc = 0, pkt_opcode = 0;
 	struct cam_control *cmd = (struct cam_control *)arg;
 	struct cam_sensor_power_ctrl_t *power_info = NULL;
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-        int ret;
-#endif
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	int ret = 0;
+	int rc_power_down = 0;
+	char fb_payload[PAYLOAD_LENGTH] = {0};
+#endif
 	if (!s_ctrl || !arg) {
 		CAM_ERR(CAM_SENSOR, "s_ctrl is NULL");
 		return -EINVAL;
@@ -869,75 +852,95 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			goto free_power_settings;
 		}
 
-		/* Power up and probe sensor */
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-                mutex_lock(&(s_ctrl->sensor_power_state_mutex));
-                if(s_ctrl->sensor_power_state == CAM_SENSOR_POWER_OFF)
-                {
-                    rc = cam_sensor_power_up(s_ctrl);
-                    if(rc < 0) {
-                        CAM_ERR(CAM_SENSOR, "sensor power up faild!");
-                        mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
-                        goto free_power_settings;
-                     } else {
-                        CAM_ERR(CAM_SENSOR, "sensor power up success sensor id 0x%x",s_ctrl->sensordata->slave_info.sensor_id);
-                        s_ctrl->sensor_power_state = CAM_SENSOR_POWER_ON;
-                     }
-                } else {
-                    CAM_ERR(CAM_SENSOR, "sensor have power up!");
-                }
-                mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+		/* Power up and probe sensor */
+		mutex_lock(&(s_ctrl->sensor_power_state_mutex));
+		if (CAM_SENSOR_POWER_OFF == s_ctrl->sensor_power_state) {
+			rc = cam_sensor_power_up(s_ctrl);
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR, "sensor power up faild!");
+				mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+				goto free_power_settings;
+			} else {
+				CAM_INFO(CAM_SENSOR, "sensor power up success sensor id 0x%x", s_ctrl->sensordata->slave_info.sensor_id);
+				s_ctrl->sensor_power_state = CAM_SENSOR_POWER_ON;
+			}
+		} else {
+			CAM_ERR(CAM_SENSOR, "sensor have power up!");
+		}
+		mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+
+		/* Match sensor ID */
+		rc = cam_sensor_match_id(s_ctrl);
+		if (rc < 0) {
+			mutex_lock(&(s_ctrl->sensor_power_state_mutex));
+			if (CAM_SENSOR_POWER_ON == s_ctrl->sensor_power_state) {
+				rc_power_down = cam_sensor_power_down(s_ctrl);
+				if (rc_power_down < 0) {
+					CAM_ERR(CAM_SENSOR, "sensor power down faild!");
+					msleep(20);
+					mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+					KEVENT_FB_SNESOR_PROBE_FAILED(fb_payload, "sensor match failed", s_ctrl->sensordata->slave_info.sensor_id);
+					goto free_power_settings;
+				} else {
+					CAM_ERR(CAM_SENSOR, "sensor power down success sensor id 0x%x", s_ctrl->sensordata->slave_info.sensor_id);
+					s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
+					mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
+					s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
+					mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
+				}
+			} else {
+				CAM_ERR(CAM_SENSOR, "sensor have power down!");
+			}
+			mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+			msleep(20);
+			KEVENT_FB_SNESOR_PROBE_FAILED(fb_payload, "sensor match failed", s_ctrl->sensordata->slave_info.sensor_id);
+			goto free_power_settings;
+		}
 #else
+		/* Power up and probe sensor */
 		rc = cam_sensor_power_up(s_ctrl);
 		if (rc < 0) {
 			CAM_ERR(CAM_SENSOR, "power up failed");
 			goto free_power_settings;
 		}
-#endif
+
 		/* Match sensor ID */
 		rc = cam_sensor_match_id(s_ctrl);
 		if (rc < 0) {
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-                        mutex_lock(&(s_ctrl->sensor_power_state_mutex));
-                        cam_sensor_power_down(s_ctrl);
-                        CAM_INFO(CAM_SENSOR, "sensor power down!");
-                        msleep(20);
-                        s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
-                        s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
-                        mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
-                        goto free_power_settings;
-#else
 			cam_sensor_power_down(s_ctrl);
 			msleep(20);
 			goto free_power_settings;
-#endif
 		}
-
+#endif
 		CAM_INFO(CAM_SENSOR,
 			"Probe success,slot:%d,slave_addr:0x%x,sensor_id:0x%x",
 			s_ctrl->soc_info.index,
 			s_ctrl->sensordata->slave_info.sensor_slave_addr,
 			s_ctrl->sensordata->slave_info.sensor_id);
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-                cam_fill_module_info(s_ctrl);
+		cam_fill_module_info(s_ctrl);
+#endif
 
-                mutex_lock(&(s_ctrl->sensor_power_state_mutex));
-                if(s_ctrl->sensor_power_state == CAM_SENSOR_POWER_ON)
-                {
-                    rc = cam_sensor_power_down(s_ctrl);
-                    if(rc < 0) {
-                        CAM_ERR(CAM_SENSOR, "sensor power down faild!");
-                        mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
-                        goto free_power_settings;
-                     } else {
-                        CAM_ERR(CAM_SENSOR, "sensor power down success sensor id 0x%x",s_ctrl->sensordata->slave_info.sensor_id);
-                        s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
-                        s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
-                     }
-                } else {
-                    CAM_ERR(CAM_SENSOR, "sensor have power down!");
-                }
-                mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+		mutex_lock(&(s_ctrl->sensor_power_state_mutex));
+		if (CAM_SENSOR_POWER_ON == s_ctrl->sensor_power_state) {
+			rc = cam_sensor_power_down(s_ctrl);
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR, "sensor power down faild!");
+				mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+				goto free_power_settings;
+			 } else {
+				CAM_INFO(CAM_SENSOR, "sensor power down success sensor id 0x%x", s_ctrl->sensordata->slave_info.sensor_id);
+				s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
+				mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
+				s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
+				mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
+			 }
+		} else {
+			CAM_ERR(CAM_SENSOR, "sensor have power down!");
+		}
+		mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
 #else
 		rc = cam_sensor_power_down(s_ctrl);
 		if (rc < 0) {
@@ -988,11 +991,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 
 		sensor_acq_dev.device_handle =
 			cam_create_device_hdl(&bridge_params);
-		if (sensor_acq_dev.device_handle <= 0) {
-			rc = -EFAULT;
-			CAM_ERR(CAM_SENSOR, "Can not create device handle");
-			goto release_mutex;
-		}
 		s_ctrl->bridge_intf.device_hdl = sensor_acq_dev.device_handle;
 		s_ctrl->bridge_intf.session_hdl = sensor_acq_dev.session_handle;
 
@@ -1007,39 +1005,31 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 		}
 
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-                mutex_lock(&(s_ctrl->sensor_power_state_mutex));
-                if(s_ctrl->sensor_power_state == CAM_SENSOR_POWER_OFF)
-                {
-                    rc = cam_sensor_power_up(s_ctrl);
-                    if(rc < 0) {
-                        CAM_ERR(CAM_SENSOR, "sensor power up faild!");
-                        mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
-                        goto release_mutex;
-                     } else {
-                        CAM_ERR(CAM_SENSOR, "sensor power up success sensor id 0x%x",s_ctrl->sensordata->slave_info.sensor_id);
-                        s_ctrl->sensor_power_state = CAM_SENSOR_POWER_ON;
-                        s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
-                     }
-                } else {
-                    CAM_ERR(CAM_SENSOR, "sensor have power up!");
-                }
-                mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
-		//lanhe add
-		if(sensor_acq_dev.reserved != 0)
-		{
-			s_ctrl->use_rdi_sof_apply = true;
+		mutex_lock(&(s_ctrl->sensor_power_state_mutex));
+		if (CAM_SENSOR_POWER_OFF == s_ctrl->sensor_power_state) {
+			rc = cam_sensor_power_up(s_ctrl);
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR, "sensor power up faild!");
+				mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+				goto release_mutex;
+			} else {
+				CAM_INFO(CAM_SENSOR, "sensor power up success sensor id 0x%x", s_ctrl->sensordata->slave_info.sensor_id);
+				s_ctrl->sensor_power_state = CAM_SENSOR_POWER_ON;
+			}
+		} else {
+			CAM_ERR(CAM_SENSOR, "sensor have power up!");
 		}
-		else
-		{
-			s_ctrl->use_rdi_sof_apply = false;
-		}
-                oplus_cam_sensor_update_setting(s_ctrl);
+		mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
 #else
 		rc = cam_sensor_power_up(s_ctrl);
 		if (rc < 0) {
 			CAM_ERR(CAM_SENSOR, "Sensor Power up failed");
 			goto release_mutex;
 		}
+#endif
+
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+		oplus_cam_sensor_update_setting(s_ctrl);
 #endif
 		s_ctrl->sensor_state = CAM_SENSOR_ACQUIRE;
 		s_ctrl->last_flush_req = 0;
@@ -1067,29 +1057,26 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			rc = -EAGAIN;
 			goto release_mutex;
 		}
+
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-                mutex_lock(&(s_ctrl->sensor_power_state_mutex));
-                if(s_ctrl->sensor_power_state == CAM_SENSOR_POWER_ON)
-                {
-                    rc = cam_sensor_power_down(s_ctrl);
-                    if(rc < 0) {
-                        CAM_ERR(CAM_SENSOR, "sensor power down faild!");
-                        mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
-                        goto release_mutex;
-                     } else {
-                        CAM_ERR(CAM_SENSOR, "sensor power down success sensor id 0x%x",s_ctrl->sensordata->slave_info.sensor_id);
-                        s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
-                        mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
-                        s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
-                        mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
-                     }
-                } else {
-                    CAM_ERR(CAM_SENSOR, "sensor have power down!");
-                    mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
-                    s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
-                    mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
-                }
-                mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+		mutex_lock(&(s_ctrl->sensor_power_state_mutex));
+		if (CAM_SENSOR_POWER_ON == s_ctrl->sensor_power_state) {
+			rc = cam_sensor_power_down(s_ctrl);
+			if (rc < 0) {
+				CAM_ERR(CAM_SENSOR, "sensor power down faild!");
+				mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+				goto release_mutex;
+			} else {
+				CAM_INFO(CAM_SENSOR, "sensor power down success!");
+			}
+		} else {
+			CAM_ERR(CAM_SENSOR, "sensor have power down!");
+		}
+		s_ctrl->sensor_power_state = CAM_SENSOR_POWER_OFF;
+		mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
+		s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_INVALID;
+		mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
+		mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
 #else
 		rc = cam_sensor_power_down(s_ctrl);
 		if (rc < 0) {
@@ -1097,6 +1084,7 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			goto release_mutex;
 		}
 #endif
+
 		cam_sensor_release_per_frame_resource(s_ctrl);
 		cam_sensor_release_stream_rsc(s_ctrl);
 		if (s_ctrl->bridge_intf.device_hdl == -1) {
@@ -1147,6 +1135,7 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			s_ctrl->sensor_state);
 			goto release_mutex;
 		}
+
 		if (s_ctrl->i2c_data.streamon_settings.is_settings_valid &&
 			(s_ctrl->i2c_data.streamon_settings.request_id == 0)) {
 			rc = cam_sensor_apply_settings(s_ctrl, 0,
@@ -1187,6 +1176,7 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 			s_ctrl->sensor_state);
 			goto release_mutex;
 		}
+
 		if (s_ctrl->i2c_data.streamoff_settings.is_settings_valid &&
 			(s_ctrl->i2c_data.streamoff_settings.request_id == 0)) {
 			rc = cam_sensor_apply_settings(s_ctrl, 0,
@@ -1217,18 +1207,21 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 
 			pkt_opcode =
 				CAM_SENSOR_PACKET_OPCODE_SENSOR_INITIAL_CONFIG;
+
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-                        mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
-                        if(s_ctrl->sensor_initsetting_state == CAM_SENSOR_SETTING_WRITE_INVALID){
-                                rc = cam_sensor_apply_settings(s_ctrl, 0,
-                                        pkt_opcode);
-                        }else
-                                CAM_ERR(CAM_SENSOR, "init setting have write");
-                        mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
+			mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
+			if (CAM_SENSOR_SETTING_WRITE_INVALID == s_ctrl->sensor_initsetting_state) {
+				rc = cam_sensor_apply_settings(s_ctrl, 0,
+					CAM_SENSOR_PACKET_OPCODE_SENSOR_INITIAL_CONFIG);
+			} else {
+				CAM_INFO(CAM_SENSOR, "init setting have write");
+			}
+			mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
 #else
 			rc = cam_sensor_apply_settings(s_ctrl, 0,
 				pkt_opcode);
 #endif
+
 			if ((rc == -EAGAIN) &&
 			(s_ctrl->io_master_info.master_type == CCI_MASTER)) {
 				/* If CCI hardware is resetting we need to wait
@@ -1237,18 +1230,8 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 				CAM_WARN(CAM_SENSOR,
 					"Reapplying the Init settings due to cci hw reset");
 				usleep_range(1000, 1010);
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-                                mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
-                                if(s_ctrl->sensor_initsetting_state == CAM_SENSOR_SETTING_WRITE_INVALID){
-                                        rc = cam_sensor_apply_settings(s_ctrl, 0,
-                                                pkt_opcode);
-                                }else
-                                        CAM_ERR(CAM_SENSOR, "init setting have write");
-                                mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
-#else
 				rc = cam_sensor_apply_settings(s_ctrl, 0,
 					pkt_opcode);
-#endif
 			}
 			s_ctrl->i2c_data.init_settings.request_id = -1;
 
@@ -1259,11 +1242,6 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 				delete_request(&s_ctrl->i2c_data.init_settings);
 				goto release_mutex;
 			}
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-                        mutex_lock(&(s_ctrl->sensor_initsetting_mutex));
-                        s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_SUCCESS;
-                        mutex_unlock(&(s_ctrl->sensor_initsetting_mutex));
-#endif
 			rc = delete_request(&s_ctrl->i2c_data.init_settings);
 			if (rc < 0) {
 				CAM_ERR(CAM_SENSOR,
@@ -1370,13 +1348,6 @@ int cam_sensor_publish_dev_info(struct cam_req_mgr_device_info *info)
 	else
 		info->p_delay = 2;
 	info->trigger = CAM_TRIGGER_POINT_SOF;
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-	//lanhe add
-	if(s_ctrl->use_rdi_sof_apply == true)
-	{
-		info->trigger = CAM_TRIGGER_POINT_RDI_SOF;
-	}
-#endif
 
 	return rc;
 }
@@ -1522,13 +1493,13 @@ int cam_sensor_apply_settings(struct cam_sensor_ctrl_t *s_ctrl,
 	struct i2c_settings_list *i2c_list;
 
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-        mutex_lock(&(s_ctrl->sensor_power_state_mutex));
-        if(s_ctrl->sensor_power_state == CAM_SENSOR_POWER_OFF) {
-                CAM_ERR(CAM_SENSOR, "sensor have power down ,cannot apply setting");
-                mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
-                return rc;
-        }
-        mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+	mutex_lock(&(s_ctrl->sensor_power_state_mutex));
+	if (CAM_SENSOR_POWER_OFF == s_ctrl->sensor_power_state) {
+		CAM_INFO(CAM_SENSOR, "sensor have power down ,cannot apply setting");
+			mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
+		return rc;
+	}
+	mutex_unlock(&(s_ctrl->sensor_power_state_mutex));
 #endif
 
 	if (req_id == 0) {
@@ -1648,6 +1619,12 @@ int cam_sensor_apply_settings(struct cam_sensor_ctrl_t *s_ctrl,
 			}
 		}
 	}
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	if(opcode == CAM_SENSOR_PACKET_OPCODE_SENSOR_INITIAL_CONFIG)
+	{
+		s_ctrl->sensor_initsetting_state = CAM_SENSOR_SETTING_WRITE_SUCCESS;
+	}
+#endif
 
 	return rc;
 }

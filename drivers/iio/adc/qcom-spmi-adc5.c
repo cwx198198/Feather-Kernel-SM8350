@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/bitops.h>
@@ -1067,6 +1066,8 @@ static const struct adc5_channels adc7_chans_pmic[ADC5_MAX_CHANNEL] = {
 	[ADC7_GPIO2_30K_PU]	= ADC5_CHAN_VOLT("gpio3_v", 0,
 					SCALE_HW_CALIB_DEFAULT)
 #endif
+	[ADC7_V_I_BAT_THERM]	= ADC5_CHAN_TEMP("bat_therm_calib_100k_pu",
+					0, SCALE_HW_CALIB_PM5_GEN3_BATT_THERM_100K)
 };
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
@@ -1103,21 +1104,14 @@ static const struct adc5_channels adc7_chans_pmic_walle[ADC5_MAX_CHANNEL] = {
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
 	[ADC7_AMUX_THM4_100K_PU]	= ADC5_CHAN_TEMP("amux_thm4_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
-#ifndef OPLUS_FEATURE_CHG_BASIC
-	[ADC7_AMUX_THM5_100K_PU]	= ADC5_CHAN_TEMP("amux_thm5_pu2", 0,
-					SCALE_HW_CALIB_THERM_100K_PU_PM7)
-#else
 	[ADC7_AMUX_THM5_100K_PU]	= ADC5_CHAN_VOLT("amux_thm5_pu2", 0,
 					SCALE_HW_CALIB_DEFAULT)
-#endif
 	[ADC7_AMUX_THM6_100K_PU]	= ADC5_CHAN_TEMP("amux_thm6_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
 	[ADC7_GPIO1_100K_PU]    = ADC5_CHAN_TEMP("gpio1_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
-#ifdef OPLUS_FEATURE_CHG_BASIC
 	[ADC7_GPIO1]	= ADC5_CHAN_VOLT("pm8350_board_id", 0,
 					SCALE_HW_CALIB_DEFAULT)
-#endif /*OPLUS_FEATURE_CHG_BASIC*/
 
 	[ADC7_GPIO2_100K_PU]	= ADC5_CHAN_TEMP("gpio2_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
@@ -1125,14 +1119,12 @@ static const struct adc5_channels adc7_chans_pmic_walle[ADC5_MAX_CHANNEL] = {
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
 	[ADC7_GPIO4_100K_PU]	= ADC5_CHAN_TEMP("gpio4_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
-	[ADC7_V_I_BAT_THERM]	= ADC5_CHAN_TEMP("bat_therm_calib_100k_pu",
-					0, SCALE_HW_CALIB_PM5_GEN3_BATT_THERM_100K)
-#ifdef OPLUS_FEATURE_CHG_BASIC
 	[ADC7_AMUX_THM5_30K_PU]	= ADC5_CHAN_VOLT("gpio1_v", 0,
 					SCALE_HW_CALIB_DEFAULT)
 	[ADC7_GPIO2_30K_PU]	= ADC5_CHAN_VOLT("gpio3_v", 0,
 					SCALE_HW_CALIB_DEFAULT)
-#endif
+	[ADC7_V_I_BAT_THERM]	= ADC5_CHAN_TEMP("bat_therm_calib_100k_pu",
+					0, SCALE_HW_CALIB_PM5_GEN3_BATT_THERM_100K)
 };
 #endif
 
@@ -1592,12 +1584,21 @@ static int adc5_probe(struct platform_device *pdev)
 	return devm_iio_device_register(dev, indio_dev);
 }
 
+static int adc5_exit(struct platform_device *pdev)
+{
+	struct adc5_chip *adc = platform_get_drvdata(pdev);
+
+	mutex_destroy(&adc->lock);
+	return 0;
+}
+
 static struct platform_driver adc5_driver = {
 	.driver = {
 		.name = "qcom-spmi-adc5",
 		.of_match_table = adc5_match_table,
 	},
 	.probe = adc5_probe,
+	.remove = adc5_exit,
 };
 module_platform_driver(adc5_driver);
 

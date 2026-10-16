@@ -48,13 +48,6 @@ struct sock *__inet6_lookup_established(struct net *net,
 					const u16 hnum, const int dif,
 					const int sdif);
 
-struct sock *inet6_lookup_reuseport(struct net *net, struct sock *sk,
-				    struct sk_buff *skb, int doff,
-				    const struct in6_addr *saddr,
-				    __be16 sport,
-				    const struct in6_addr *daddr,
-				    unsigned short hnum);
-
 struct sock *inet6_lookup_listener(struct net *net,
 				   struct inet_hashinfo *hashinfo,
 				   struct sk_buff *skb, int doff,
@@ -92,8 +85,9 @@ static inline struct sock *__inet6_lookup_skb(struct inet_hashinfo *hashinfo,
 					      int iif, int sdif,
 					      bool *refcounted)
 {
-	struct sock *sk = skb_steal_sock(skb, refcounted);
+	struct sock *sk = skb_steal_sock(skb);
 
+	*refcounted = true;
 	if (sk)
 		return sk;
 

@@ -33,27 +33,21 @@ static void proc_evict_inode(struct inode *inode)
 {
 	struct proc_dir_entry *de;
 	struct ctl_table_header *head;
-	struct proc_inode *ei = PROC_I(inode);
 
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 
 	/* Stop tracking associated processes */
-	if (ei->pid) {
-		put_pid(ei->pid);
-		ei->pid = NULL;
-	}
+	put_pid(PROC_I(inode)->pid);
 
 	/* Let go of any associated proc directory entry */
-	de = ei->pde;
-	if (de) {
+	de = PDE(inode);
+	if (de)
 		pde_put(de);
-		ei->pde = NULL;
-	}
 
-	head = ei->sysctl;
+	head = PROC_I(inode)->sysctl;
 	if (head) {
-		WRITE_ONCE(ei->sysctl, NULL);
+		RCU_INIT_POINTER(PROC_I(inode)->sysctl, NULL);
 		proc_sys_evict_inode(inode, head);
 	}
 }

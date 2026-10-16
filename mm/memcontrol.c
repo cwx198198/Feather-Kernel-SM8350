@@ -67,6 +67,9 @@
 #include <linux/uaccess.h>
 
 #include <trace/events/vmscan.h>
+#ifdef CONFIG_HYBRIDSWAP
+#include <trace/hooks/vh_vmscan.h>
+#endif
 
 struct cgroup_subsys memory_cgrp_subsys __read_mostly;
 EXPORT_SYMBOL(memory_cgrp_subsys);
@@ -722,6 +725,7 @@ parent_nodeinfo(struct mem_cgroup_per_node *pn, int nid)
 	return mem_cgroup_nodeinfo(parent, nid);
 }
 
+
 /**
  * __mod_lruvec_state - update lruvec memory statistics
  * @lruvec: the lruvec
@@ -732,8 +736,27 @@ parent_nodeinfo(struct mem_cgroup_per_node *pn, int nid)
  * function updates the all three counters that are affected by a
  * change of state at this level: per-node, per-cgroup, per-lruvec.
  */
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+struct mem_cgroup_per_node *chp_lruvec_to_memcg_pn(struct lruvec *lruvec)
+{
+	struct deferred_split *ds_queue = NULL;
+	struct mem_cgroup *memcg = NULL;
+	struct mem_cgroup_per_node *pn = NULL;
+	struct chp_lruvec *chp_lruvec = NULL;
+
+	chp_lruvec = container_of(lruvec, struct chp_lruvec, lruvec);
+	ds_queue = chp_lruvec->ds;
+	memcg = container_of(ds_queue, struct mem_cgroup, deferred_split_queue);
+	pn = memcg->nodeinfo[0];
+
+	CHP_BUG_ON(!ds_queue || !memcg || !pn);
+	return pn;
+}
+#endif
+
 void __mod_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx,
-			int val)
+			      int val)
 {
 	pg_data_t *pgdat = lruvec_pgdat(lruvec);
 	struct mem_cgroup_per_node *pn;
@@ -746,7 +769,12 @@ void __mod_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx,
 	if (mem_cgroup_disabled())
 		return;
 
-	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (is_chp_lruvec(lruvec))
+		pn = chp_lruvec_to_memcg_pn(lruvec);
+	else
+#endif
+		pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 	memcg = pn->memcg;
 
 	/* Update memcg */
@@ -786,6 +814,7 @@ void __mod_lruvec_slab_state(void *p, enum node_stat_item idx, int val)
 		__mod_node_page_state(pgdat, idx, val);
 	} else {
 		lruvec = mem_cgroup_lruvec(pgdat, memcg);
+		/* FIXME: chp lruvec no care! */
 		__mod_lruvec_state(lruvec, idx, val);
 	}
 	rcu_read_unlock();
@@ -1229,11 +1258,8 @@ int mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
 		struct task_struct *task;
 
 		css_task_iter_start(&iter->css, CSS_TASK_ITER_PROCS, &it);
-		while (!ret && (task = css_task_iter_next(&it))) {
+		while (!ret && (task = css_task_iter_next(&it)))
 			ret = fn(task, arg);
-			/* Avoid potential softlockup warning */
-			cond_resched();
-		}
 		css_task_iter_end(&it);
 		if (ret) {
 			mem_cgroup_iter_break(memcg, iter);
@@ -1284,6 +1310,47 @@ out:
 	return lruvec;
 }
 
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+struct lruvec *mem_cgroup_chp_page_lruvec(struct page *page, struct pglist_data *pgdat)
+{
+	struct mem_cgroup *memcg;
+	struct chp_lruvec *chp_lruvec;
+	struct lruvec *lruvec;
+
+	if (mem_cgroup_disabled()) {
+		chp_lruvec = (struct chp_lruvec *)pgdat->deferred_split_queue.split_queue_len;
+		lruvec = &chp_lruvec->lruvec;
+		CHP_BUG_ON(!lruvec);
+		goto out;
+	}
+
+	memcg = page->mem_cgroup;
+	/*
+	 * Swapcache readahead pages are added to the LRU - and
+	 * possibly migrated - before they are charged.
+	 */
+	if (!memcg)
+		memcg = root_mem_cgroup;
+
+	CHP_BUG_ON(MAX_NUMNODES > 1);
+	chp_lruvec = (struct chp_lruvec *)memcg->deferred_split_queue.split_queue_len;
+	CHP_BUG_ON(!chp_lruvec);
+	lruvec = &chp_lruvec->lruvec;
+	CHP_BUG_ON(!lruvec);
+out:
+	/*
+	 * Since a node can be onlined after the mem_cgroup was created,
+	 * we have to be prepared to initialize lruvec->zone here;
+	 * and if offlined then reonlined, we need to reinitialize it.
+	 */
+	if (unlikely(lruvec->pgdat != pgdat))
+		lruvec->pgdat = pgdat;
+
+	return lruvec;
+}
+#endif
+
 /**
  * mem_cgroup_update_lru_size - account for adding or removing an lru page
  * @lruvec: mem_cgroup per zone lru vector
@@ -1305,8 +1372,19 @@ void mem_cgroup_update_lru_size(struct lruvec *lruvec, enum lru_list lru,
 	if (mem_cgroup_disabled())
 		return;
 
-	mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
-	lru_size = &mz->lru_zone_size[zid][lru];
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (is_chp_lruvec(lruvec)) {
+		struct chp_lruvec *chp_lruvec = NULL;
+
+		chp_lruvec = container_of(lruvec, struct chp_lruvec, lruvec);
+		lru_size = &chp_lruvec->lru_zone_size[zid][lru];
+	}
+	else
+#endif
+	{
+		mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+		lru_size = &mz->lru_zone_size[zid][lru];
+	}
 
 	if (nr_pages < 0)
 		*lru_size += nr_pages;
@@ -2217,9 +2295,6 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 {
 	struct mem_cgroup *old = stock->cached;
 
-	if (!old)
-		return;
-
 	if (stock->nr_pages) {
 		page_counter_uncharge(&old->memory, stock->nr_pages);
 		if (do_memsw_account())
@@ -2227,8 +2302,6 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 		css_put_many(&old->css, stock->nr_pages);
 		stock->nr_pages = 0;
 	}
-
-	css_put(&old->css);
 	stock->cached = NULL;
 }
 
@@ -2264,7 +2337,6 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 	stock = this_cpu_ptr(&memcg_stock);
 	if (stock->cached != memcg) { /* reset if necessary */
 		drain_stock(stock);
-		css_get(&memcg->css);
 		stock->cached = memcg;
 	}
 	stock->nr_pages += nr_pages;
@@ -2747,7 +2819,11 @@ static void lock_page_lru(struct page *page, int *isolated)
 	spin_lock_irq(&pgdat->lru_lock);
 	if (PageLRU(page)) {
 		struct lruvec *lruvec;
-
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+		if (ContPteCMAHugePageHead(page))
+			lruvec = mem_cgroup_chp_page_lruvec(page, pgdat);
+		else
+#endif
 		lruvec = mem_cgroup_page_lruvec(page, pgdat);
 		ClearPageLRU(page);
 		del_page_from_lru_list(page, lruvec, page_lru(page));
@@ -2762,8 +2838,13 @@ static void unlock_page_lru(struct page *page, int isolated)
 
 	if (isolated) {
 		struct lruvec *lruvec;
-
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+		if (ContPteCMAHugePageHead(page))
+			lruvec = mem_cgroup_chp_page_lruvec(page, pgdat);
+		else
+#endif
 		lruvec = mem_cgroup_page_lruvec(page, pgdat);
+
 		VM_BUG_ON_PAGE(PageLRU(page), page);
 		SetPageLRU(page);
 		add_page_to_lru_list(page, lruvec, page_lru(page));
@@ -3818,6 +3899,7 @@ static unsigned long mem_cgroup_node_nr_lru_pages(struct mem_cgroup *memcg,
 					   int nid, unsigned int lru_mask)
 {
 	struct lruvec *lruvec = mem_cgroup_lruvec(NODE_DATA(nid), memcg);
+	/* FIXME: chp lruvec to do! */
 	unsigned long nr = 0;
 	enum lru_list lru;
 
@@ -4014,6 +4096,105 @@ static int memcg_stat_show(struct seq_file *m, void *v)
 
 	return 0;
 }
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+static char *chp_lru_text[NR_LRU_LISTS] = {
+	"inactive_anon",
+	"active_anon",
+	"inactive_file",
+	"active_file",
+	"unevictable",
+};
+
+static char *chp_lru_stat_format(struct mem_cgroup *memcg,
+		struct mem_cgroup_per_node *mz,
+		struct chp_lruvec *chp_lruvec)
+{
+	int i;
+	int zid, lru;
+	int proportion[2] = { 0 };
+	struct seq_buf s;
+	unsigned long lru_size;
+	unsigned long total_lru_size[2][NR_LRU_LISTS] = { 0 };
+	unsigned long total_size[2] = { 0 };
+	unsigned long memcg_total_lru_size[NR_LRU_LISTS] = { 0 };
+	unsigned long memcg_total_size = 0;
+	pg_data_t *pgdat = NODE_DATA(0);
+
+	seq_buf_init(&s, kmalloc(PAGE_SIZE, GFP_KERNEL), PAGE_SIZE);
+	if (!s.buffer)
+		return NULL;
+
+	for (i = 0; i < 2; i++) {
+		seq_buf_printf(&s, "-------------------- %s LRU --------------------\n", i ? "NORMAL" : "CHP");
+		seq_buf_printf(&s, "TOTAL LRU STAT\n");
+		for (lru = 0; lru < NR_LRU_LISTS; lru++) {
+			lru_size = 0;
+			for (zid = 0; zid < MAX_NR_ZONES; zid++) {
+				lru_size += i ? READ_ONCE(mz->lru_zone_size[zid][lru]) :
+					READ_ONCE(chp_lruvec->lru_zone_size[zid][lru]);
+			}
+			total_lru_size[i][lru] = lru_size;
+			memcg_total_lru_size[lru] += lru_size;
+			total_size[i] += lru_size;
+			seq_buf_printf(&s, "  LRU %s: %lu\n", chp_lru_text[lru], lru_size);
+		}
+
+		seq_buf_printf(&s, "ZONES LRU STAT\n");
+		for (zid = 0; zid < MAX_NR_ZONES; zid++) {
+			seq_buf_printf(&s, "  ZONE %s:\n", pgdat->node_zones[zid].name);
+			for (lru = 0; lru < NR_LRU_LISTS; lru++) {
+				seq_buf_printf(&s, "    LRU %s: %lu\n", chp_lru_text[lru],
+						i ? READ_ONCE(mz->lru_zone_size[zid][lru]) :
+						READ_ONCE(chp_lruvec->lru_zone_size[zid][lru]));
+			}
+		}
+	}
+
+	seq_buf_printf(&s, "-------------------- MEMCG TOTAOL LRU --------------------\n");
+	for (lru = 0; lru < NR_LRU_LISTS; lru++) {
+		memcg_total_size += memcg_total_lru_size[lru];
+		proportion[0] = (total_lru_size[0][lru] * 100) / memcg_total_lru_size[lru];
+		proportion[1] = (total_lru_size[1][lru] * 100) / memcg_total_lru_size[lru];
+
+		seq_buf_printf(&s, "LRU %s: %lu(page) %lu(Byte)  proportion-> %d%% chp, %d%% normal\n",
+				chp_lru_text[lru], memcg_total_lru_size[lru],
+				memcg_total_lru_size[lru] * PAGE_SIZE,
+				proportion[0], proportion[1]);
+	}
+	seq_buf_printf(&s, "memcg total size:%lu(page) %lu(Byte) \n",
+			memcg_total_size, memcg_total_size * PAGE_SIZE);
+	seq_buf_printf(&s, "  chp total size:%lu(page) %lu(Byte) proportion-> %d%%\n",
+			total_size[0], total_size[0] * PAGE_SIZE, (total_size[0] * 100) / memcg_total_size);
+	seq_buf_printf(&s, "  normal total size:%lu(page) %lu(Byte) proportion-> %d%%\n",
+			total_size[1], total_size[1] * PAGE_SIZE, (total_size[1] * 100) / memcg_total_size);
+
+	/* The above should easily fit into one page */
+	WARN_ON_ONCE(seq_buf_has_overflowed(&s));
+
+	return s.buffer;
+}
+
+int chp_lru_stat_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+	struct mem_cgroup_per_node *mz;
+	struct chp_lruvec *chp_lruvec;
+	char *buf;
+
+	CHP_BUG_ON(MAX_NUMNODES > 1);
+	mz = memcg->nodeinfo[0];
+	chp_lruvec = (struct chp_lruvec *)memcg->deferred_split_queue.split_queue_len;
+
+	buf = chp_lru_stat_format(memcg, mz, chp_lruvec);
+	if (!buf)
+		return -ENOMEM;
+	seq_puts(m, buf);
+	kfree(buf);
+
+	return 0;
+}
+#endif
 
 static u64 mem_cgroup_swappiness_read(struct cgroup_subsys_state *css,
 				      struct cftype *cft)
@@ -4735,12 +4916,9 @@ static ssize_t memcg_write_event_control(struct kernfs_open_file *of,
 	buf = endp + 1;
 
 	cfd = simple_strtoul(buf, &endp, 10);
-	if (*endp == '\0')
-		buf = endp;
-	else if (*endp == ' ')
-		buf = endp + 1;
-	else
+	if ((*endp != ' ') && (*endp != '\0'))
 		return -EINVAL;
+	buf = endp + 1;
 
 	event = kzalloc(sizeof(*event), GFP_KERNEL);
 	if (!event)
@@ -4891,6 +5069,12 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.name = "stat",
 		.seq_show = memcg_stat_show,
 	},
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	{
+		.name = "chp_lru_stat",
+		.seq_show = chp_lru_stat_show,
+	},
+#endif
 	{
 		.name = "force_empty",
 		.write = mem_cgroup_force_empty_write,
@@ -5017,6 +5201,9 @@ static DEFINE_IDR(mem_cgroup_idr);
 static void mem_cgroup_id_remove(struct mem_cgroup *memcg)
 {
 	if (memcg->id.id > 0) {
+#ifdef CONFIG_HYBRIDSWAP
+		trace_android_vh_mem_cgroup_id_remove(memcg);
+#endif
 		idr_remove(&mem_cgroup_idr, memcg->id.id);
 		memcg->id.id = 0;
 	}
@@ -5053,7 +5240,33 @@ struct mem_cgroup *mem_cgroup_from_id(unsigned short id)
 	WARN_ON_ONCE(!rcu_read_lock_held());
 	return idr_find(&mem_cgroup_idr, id);
 }
+#ifdef CONFIG_HYBRIDSWAP
+EXPORT_SYMBOL(mem_cgroup_from_id);
+#endif
 
+#if defined(CONFIG_TRANSPARENT_HUGEPAGE)
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+static int memcg_init_chp_lruvec(struct mem_cgroup *memcg)
+{
+	struct deferred_split *ds_queue = &memcg->deferred_split_queue;
+	struct chp_lruvec *chp_lruvec = NULL;
+	struct lruvec *lruvec = NULL;
+
+	chp_lruvec = kzalloc(sizeof(struct chp_lruvec), GFP_KERNEL);
+	if (!chp_lruvec)
+		return -ENOMEM;
+
+	lruvec = &chp_lruvec->lruvec;
+	lruvec_init(lruvec);
+	set_bit(LRUVEC_FOR_CHP, &chp_lruvec->flags);
+
+	ds_queue->split_queue_len = (unsigned long)chp_lruvec;
+	chp_lruvec->ds = ds_queue;
+
+	return 0;
+}
+#endif
+#endif
 static int alloc_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
 {
 	struct mem_cgroup_per_node *pn;
@@ -5112,8 +5325,14 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 
 	for_each_node(node)
 		free_mem_cgroup_per_node_info(memcg, node);
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	kfree((void *)memcg->deferred_split_queue.split_queue_len);
+#endif
 	free_percpu(memcg->vmstats_percpu);
 	free_percpu(memcg->vmstats_local);
+#ifdef CONFIG_HYBRIDSWAP
+	trace_android_vh_mem_cgroup_free(memcg);
+#endif
 	kfree(memcg);
 }
 
@@ -5185,12 +5404,25 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 		memcg->cgwb_frn[i].done =
 			__WB_COMPLETION_INIT(&memcg_cgwb_frn_waitq);
 #endif
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+#if defined(CONFIG_TRANSPARENT_HUGEPAGE)
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	CHP_BUG_ON(MAX_NUMNODES > 1);
+
+	if (memcg_init_chp_lruvec(memcg)) {
+		pr_err("@@@%s:%d comm:%s pid:%d -> fail to memcg_init_chp_lruvec!@\n",
+			__func__, __LINE__, current->comm, current->pid);
+		goto fail;
+	}
+#else
 	spin_lock_init(&memcg->deferred_split_queue.split_queue_lock);
 	INIT_LIST_HEAD(&memcg->deferred_split_queue.split_queue);
 	memcg->deferred_split_queue.split_queue_len = 0;
 #endif
+#endif
 	idr_replace(&mem_cgroup_idr, memcg, memcg->id.id);
+#ifdef CONFIG_HYBRIDSWAP
+	trace_android_vh_mem_cgroup_alloc(memcg);
+#endif
 	return memcg;
 fail:
 	mem_cgroup_id_remove(memcg);
@@ -5277,6 +5509,9 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
 	/* Online state pins memcg ID, memcg ID pins CSS */
 	refcount_set(&memcg->id.ref, 1);
 	css_get(css);
+#ifdef CONFIG_HYBRIDSWAP
+	trace_android_vh_mem_cgroup_css_online(css, memcg);
+#endif
 	return 0;
 }
 
@@ -5285,6 +5520,9 @@ static void mem_cgroup_css_offline(struct cgroup_subsys_state *css)
 	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
 	struct mem_cgroup_event *event, *tmp;
 
+#ifdef CONFIG_HYBRIDSWAP
+	trace_android_vh_mem_cgroup_css_offline(css, memcg);
+#endif
 	/*
 	 * Unregister events and notify userspace.
 	 * Notify userspace about cgroup removing only after rmdir of cgroup
@@ -5547,8 +5785,17 @@ static int mem_cgroup_move_account(struct page *page,
 	anon = PageAnon(page);
 
 	pgdat = page_pgdat(page);
-	from_vec = mem_cgroup_lruvec(pgdat, from);
-	to_vec = mem_cgroup_lruvec(pgdat, to);
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	if (ContPteCMAHugePageHead(page)) {
+		from_vec = mem_cgroup_chp_lruvec(from, pgdat);
+		to_vec = mem_cgroup_chp_lruvec(to, pgdat);
+	} else
+#endif
+	{
+		from_vec = mem_cgroup_lruvec(pgdat, from);
+		to_vec = mem_cgroup_lruvec(pgdat, to);
+	}
 
 	lock_page_memcg(page);
 
@@ -6365,6 +6612,13 @@ static struct cftype memory_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_stat_show,
 	},
+
+#if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
+	{
+		.name = "chp_lru_stat",
+		.seq_show = chp_lru_stat_show,
+	},
+#endif
 	{
 		.name = "oom.group",
 		.flags = CFTYPE_NOT_ON_ROOT | CFTYPE_NS_DELEGATABLE,
@@ -6390,117 +6644,6 @@ struct cgroup_subsys memory_cgrp_subsys = {
 	.early_init = 0,
 };
 
-/*
- * This function calculates an individual cgroup's effective
- * protection which is derived from its own memory.min/low, its
- * parent's and siblings' settings, as well as the actual memory
- * distribution in the tree.
- *
- * The following rules apply to the effective protection values:
- *
- * 1. At the first level of reclaim, effective protection is equal to
- *    the declared protection in memory.min and memory.low.
- *
- * 2. To enable safe delegation of the protection configuration, at
- *    subsequent levels the effective protection is capped to the
- *    parent's effective protection.
- *
- * 3. To make complex and dynamic subtrees easier to configure, the
- *    user is allowed to overcommit the declared protection at a given
- *    level. If that is the case, the parent's effective protection is
- *    distributed to the children in proportion to how much protection
- *    they have declared and how much of it they are utilizing.
- *
- *    This makes distribution proportional, but also work-conserving:
- *    if one cgroup claims much more protection than it uses memory,
- *    the unused remainder is available to its siblings.
- *
- * 4. Conversely, when the declared protection is undercommitted at a
- *    given level, the distribution of the larger parental protection
- *    budget is NOT proportional. A cgroup's protection from a sibling
- *    is capped to its own memory.min/low setting.
- *
- * 5. However, to allow protecting recursive subtrees from each other
- *    without having to declare each individual cgroup's fixed share
- *    of the ancestor's claim to protection, any unutilized -
- *    "floating" - protection from up the tree is distributed in
- *    proportion to each cgroup's *usage*. This makes the protection
- *    neutral wrt sibling cgroups and lets them compete freely over
- *    the shared parental protection budget, but it protects the
- *    subtree as a whole from neighboring subtrees.
- *
- * Note that 4. and 5. are not in conflict: 4. is about protecting
- * against immediate siblings whereas 5. is about protecting against
- * neighboring subtrees.
- */
-static unsigned long effective_protection(unsigned long usage,
-					  unsigned long parent_usage,
-					  unsigned long setting,
-					  unsigned long parent_effective,
-					  unsigned long siblings_protected)
-{
-	unsigned long protected;
-	unsigned long ep;
-
-	protected = min(usage, setting);
-	/*
-	 * If all cgroups at this level combined claim and use more
-	 * protection then what the parent affords them, distribute
-	 * shares in proportion to utilization.
-	 *
-	 * We are using actual utilization rather than the statically
-	 * claimed protection in order to be work-conserving: claimed
-	 * but unused protection is available to siblings that would
-	 * otherwise get a smaller chunk than what they claimed.
-	 */
-	if (siblings_protected > parent_effective)
-		return protected * parent_effective / siblings_protected;
-
-	/*
-	 * Ok, utilized protection of all children is within what the
-	 * parent affords them, so we know whatever this child claims
-	 * and utilizes is effectively protected.
-	 *
-	 * If there is unprotected usage beyond this value, reclaim
-	 * will apply pressure in proportion to that amount.
-	 *
-	 * If there is unutilized protection, the cgroup will be fully
-	 * shielded from reclaim, but we do return a smaller value for
-	 * protection than what the group could enjoy in theory. This
-	 * is okay. With the overcommit distribution above, effective
-	 * protection is always dependent on how memory is actually
-	 * consumed among the siblings anyway.
-	 */
-	ep = protected;
-
-	/*
-	 * If the children aren't claiming (all of) the protection
-	 * afforded to them by the parent, distribute the remainder in
-	 * proportion to the (unprotected) memory of each cgroup. That
-	 * way, cgroups that aren't explicitly prioritized wrt each
-	 * other compete freely over the allowance, but they are
-	 * collectively protected from neighboring trees.
-	 *
-	 * We're using unprotected memory for the weight so that if
-	 * some cgroups DO claim explicit protection, we don't protect
-	 * the same bytes twice.
-	 */
-	if (!(cgrp_dfl_root.flags & CGRP_ROOT_MEMORY_RECURSIVE_PROT))
-		return ep;
-
-	if (parent_effective > siblings_protected && usage > protected) {
-		unsigned long unclaimed;
-
-		unclaimed = parent_effective - siblings_protected;
-		unclaimed *= usage - protected;
-		unclaimed /= parent_usage - siblings_protected;
-
-		ep += unclaimed;
-	}
-
-	return ep;
-}
-
 /**
  * mem_cgroup_protected - check if memory consumption is in the normal range
  * @root: the top ancestor of the sub-tree being checked
@@ -6514,12 +6657,70 @@ static unsigned long effective_protection(unsigned long usage,
  *   MEMCG_PROT_LOW: cgroup memory is protected as long there is
  *     an unprotected supply of reclaimable memory from other cgroups.
  *   MEMCG_PROT_MIN: cgroup memory is protected
+ *
+ * @root is exclusive; it is never protected when looked at directly
+ *
+ * To provide a proper hierarchical behavior, effective memory.min/low values
+ * are used. Below is the description of how effective memory.low is calculated.
+ * Effective memory.min values is calculated in the same way.
+ *
+ * Effective memory.low is always equal or less than the original memory.low.
+ * If there is no memory.low overcommittment (which is always true for
+ * top-level memory cgroups), these two values are equal.
+ * Otherwise, it's a part of parent's effective memory.low,
+ * calculated as a cgroup's memory.low usage divided by sum of sibling's
+ * memory.low usages, where memory.low usage is the size of actually
+ * protected memory.
+ *
+ *                                             low_usage
+ * elow = min( memory.low, parent->elow * ------------------ ),
+ *                                        siblings_low_usage
+ *
+ *             | memory.current, if memory.current < memory.low
+ * low_usage = |
+ *	       | 0, otherwise.
+ *
+ *
+ * Such definition of the effective memory.low provides the expected
+ * hierarchical behavior: parent's memory.low value is limiting
+ * children, unprotected memory is reclaimed first and cgroups,
+ * which are not using their guarantee do not affect actual memory
+ * distribution.
+ *
+ * For example, if there are memcgs A, A/B, A/C, A/D and A/E:
+ *
+ *     A      A/memory.low = 2G, A/memory.current = 6G
+ *    //\\
+ *   BC  DE   B/memory.low = 3G  B/memory.current = 2G
+ *            C/memory.low = 1G  C/memory.current = 2G
+ *            D/memory.low = 0   D/memory.current = 2G
+ *            E/memory.low = 10G E/memory.current = 0
+ *
+ * and the memory pressure is applied, the following memory distribution
+ * is expected (approximately):
+ *
+ *     A/memory.current = 2G
+ *
+ *     B/memory.current = 1.3G
+ *     C/memory.current = 0.6G
+ *     D/memory.current = 0
+ *     E/memory.current = 0
+ *
+ * These calculations require constant tracking of the actual low usages
+ * (see propagate_protected_usage()), as well as recursive calculation of
+ * effective memory.low values. But as we do call mem_cgroup_protected()
+ * path for each memory cgroup top-down from the reclaim,
+ * it's possible to optimize this part, and save calculated elow
+ * for next usage. This part is intentionally racy, but it's ok,
+ * as memory.low is a best-effort mechanism.
  */
 enum mem_cgroup_protection mem_cgroup_protected(struct mem_cgroup *root,
 						struct mem_cgroup *memcg)
 {
-	unsigned long usage, parent_usage;
 	struct mem_cgroup *parent;
+	unsigned long emin, parent_emin;
+	unsigned long elow, parent_elow;
+	unsigned long usage;
 
 	if (mem_cgroup_disabled())
 		return MEMCG_PROT_NONE;
@@ -6541,31 +6742,52 @@ enum mem_cgroup_protection mem_cgroup_protected(struct mem_cgroup *root,
 	if (!usage)
 		return MEMCG_PROT_NONE;
 
+	emin = memcg->memory.min;
+	elow = memcg->memory.low;
+
 	parent = parent_mem_cgroup(memcg);
 	/* No parent means a non-hierarchical mode on v1 memcg */
 	if (!parent)
 		return MEMCG_PROT_NONE;
 
-	if (parent == root) {
-		memcg->memory.emin = memcg->memory.min;
-		memcg->memory.elow = memcg->memory.low;
-		goto out;
+	if (parent == root)
+		goto exit;
+
+	parent_emin = READ_ONCE(parent->memory.emin);
+	emin = min(emin, parent_emin);
+	if (emin && parent_emin) {
+		unsigned long min_usage, siblings_min_usage;
+
+		min_usage = min(usage, memcg->memory.min);
+		siblings_min_usage = atomic_long_read(
+			&parent->memory.children_min_usage);
+
+		if (min_usage && siblings_min_usage)
+			emin = min(emin, parent_emin * min_usage /
+				   siblings_min_usage);
 	}
 
-	parent_usage = page_counter_read(&parent->memory);
+	parent_elow = READ_ONCE(parent->memory.elow);
+	elow = min(elow, parent_elow);
+	if (elow && parent_elow) {
+		unsigned long low_usage, siblings_low_usage;
 
-	memcg->memory.emin = effective_protection(usage, parent_usage,
-			memcg->memory.min, READ_ONCE(parent->memory.emin),
-			atomic_long_read(&parent->memory.children_min_usage));
+		low_usage = min(usage, memcg->memory.low);
+		siblings_low_usage = atomic_long_read(
+			&parent->memory.children_low_usage);
 
-	memcg->memory.elow = effective_protection(usage, parent_usage,
-			memcg->memory.low, READ_ONCE(parent->memory.elow),
-			atomic_long_read(&parent->memory.children_low_usage));
+		if (low_usage && siblings_low_usage)
+			elow = min(elow, parent_elow * low_usage /
+				   siblings_low_usage);
+	}
 
-out:
-	if (usage <= memcg->memory.emin)
+exit:
+	memcg->memory.emin = emin;
+	memcg->memory.elow = elow;
+
+	if (usage <= emin)
 		return MEMCG_PROT_MIN;
-	else if (usage <= memcg->memory.elow)
+	else if (usage <= elow)
 		return MEMCG_PROT_LOW;
 	else
 		return MEMCG_PROT_NONE;
@@ -6600,6 +6822,12 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
 	if (mem_cgroup_disabled())
 		goto out;
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (nr_pages == 1 && PageCont(page)) {
+		CHP_BUG_ON(!IS_ALIGNED(page_to_pfn(page), HPAGE_CONT_PTE_NR));
+		nr_pages = HPAGE_CONT_PTE_NR;
+	}
+#endif
 	if (PageSwapCache(page)) {
 		/*
 		 * Every swap fault against a single page tries to charge the
@@ -6683,6 +6911,12 @@ void mem_cgroup_commit_charge(struct page *page, struct mem_cgroup *memcg,
 	if (!memcg)
 		return;
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (nr_pages == 1 && PageCont(page)) {
+		CHP_BUG_ON(!IS_ALIGNED(page_to_pfn(page), HPAGE_CONT_PTE_NR));
+		nr_pages = HPAGE_CONT_PTE_NR;
+	}
+#endif
 	commit_charge(page, memcg, lrucare);
 
 	local_irq_disable();
@@ -6723,6 +6957,13 @@ void mem_cgroup_cancel_charge(struct page *page, struct mem_cgroup *memcg,
 	 */
 	if (!memcg)
 		return;
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (nr_pages == 1 && PageCont(page)) {
+		CHP_BUG_ON(!IS_ALIGNED(page_to_pfn(page), HPAGE_CONT_PTE_NR));
+		nr_pages = HPAGE_CONT_PTE_NR;
+	}
+#endif
 
 	cancel_charge(memcg, nr_pages);
 }
@@ -6801,6 +7042,15 @@ static void uncharge_page(struct page *page, struct uncharge_gather *ug)
 			nr_pages = compound_nr(page);
 			ug->nr_huge += nr_pages;
 		}
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (nr_pages == 1 && PageCont(page)) {
+			CHP_BUG_ON(!IS_ALIGNED(page_to_pfn(page), HPAGE_CONT_PTE_NR));
+			ug->nr_huge += HPAGE_CONT_PTE_NR;
+			nr_pages = HPAGE_CONT_PTE_NR;
+		}
+#endif
+
 		if (PageAnon(page))
 			ug->nr_anon += nr_pages;
 		else {
@@ -7249,7 +7499,9 @@ void mem_cgroup_uncharge_swap(swp_entry_t entry, unsigned int nr_pages)
 long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
 {
 	long nr_swap_pages = get_nr_swap_pages();
-
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	CHP_BUG_ON(!memcg);
+#endif
 	if (!do_swap_account || !cgroup_subsys_on_dfl(memory_cgrp_subsys))
 		return nr_swap_pages;
 	for (; memcg != root_mem_cgroup; memcg = parent_mem_cgroup(memcg))

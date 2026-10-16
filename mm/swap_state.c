@@ -99,13 +99,18 @@ static atomic_t swapin_readahead_hits = ATOMIC_INIT(4);
 
 void show_swap_cache_info(void)
 {
+	unsigned long totalswap = total_swap_pages;
+#if defined(CONFIG_NANDSWAP)
+	if (nandswap_si)
+		totalswap -= nandswap_si->pages;
+#endif
 	printk("%lu pages in swap cache\n", total_swapcache_pages());
 	printk("Swap cache stats: add %lu, delete %lu, find %lu/%lu\n",
 		swap_cache_info.add_total, swap_cache_info.del_total,
 		swap_cache_info.find_success, swap_cache_info.find_total);
 	printk("Free swap  = %ldkB\n",
 		get_nr_swap_pages() << (PAGE_SHIFT - 10));
-	printk("Total swap = %lukB\n", total_swap_pages << (PAGE_SHIFT - 10));
+	printk("Total swap = %lukB\n", totalswap << (PAGE_SHIFT - 10));
 }
 
 /*
@@ -131,6 +136,13 @@ int add_to_swap_cache(struct page *page, swp_entry_t entry, gfp_t gfp)
 		xas_create_range(&xas);
 		if (xas_error(&xas))
 			goto unlock;
+
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (nr > 1) {
+			CHP_BUG_ON(!is_thp_swap(swp_swap_info(entry)));
+			CHP_BUG_ON(!IS_ALIGNED(swp_offset(entry), HPAGE_CONT_PTE_NR));
+		}
+#endif
 		for (i = 0; i < nr; i++) {
 			VM_BUG_ON_PAGE(xas.xa_index != idx + i, page);
 			set_page_private(page + i, entry.val + i);
@@ -537,7 +549,11 @@ static unsigned long swapin_nr_pages(unsigned long offset)
  * This has been extended to use the NUMA policies from the mm triggering
  * the readahead.
  *
- * Caller must hold read mmap_sem if vmf->vma is not NULL.
+ * Caller must hold down_read on the vma->vm_mm if vmf->vma is not NULL.
+ * This is needed to ensure the VMA will not be freed in our back. In the case
+ * of the speculative page fault handler, this cannot happen, even if we don't
+ * hold the mmap_sem. Callees are assumed to take care of reading VMA's fields
+ * using READ_ONCE() to read consistent values.
  */
 struct page *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 				struct vm_fault *vmf)
@@ -634,10 +650,18 @@ static inline void swap_ra_clamp_pfn(struct vm_area_struct *vma,
 				     unsigned long *start,
 				     unsigned long *end)
 {
-	*start = max3(lpfn, PFN_DOWN(vma->vm_start),
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
+	*start = max3(lpfn, PFN_DOWN(READ_ONCE(vma->vm_start)),
 		      PFN_DOWN(faddr & PMD_MASK));
-	*end = min3(rpfn, PFN_DOWN(vma->vm_end),
+	*end = min3(rpfn, PFN_DOWN(READ_ONCE(vma->vm_end)),
 		    PFN_DOWN((faddr & PMD_MASK) + PMD_SIZE));
+#else
+	/* make read-ahead aligned with CONT_PTE_SHIFT */
+	*start = max(PFN_DOWN(READ_ONCE(vma->vm_start)),
+		     PFN_DOWN(faddr & CONT_PTE_MASK));
+	*end = min(PFN_DOWN(READ_ONCE(vma->vm_end)),
+		   PFN_DOWN((faddr & CONT_PTE_MASK) + CONT_PTE_SIZE));
+#endif
 }
 
 static void swap_ra_info(struct vm_fault *vmf,

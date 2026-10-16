@@ -59,7 +59,6 @@ struct snd_compr_runtime {
  * @direction: stream direction, playback/recording
  * @metadata_set: metadata set flag, true when set
  * @next_track: has userspace signal next track transition, true when set
- * @pause_in_draining: paused during draining state, true when set
  * @private_data: pointer to DSP private data
  */
 struct snd_compr_stream {
@@ -71,7 +70,6 @@ struct snd_compr_stream {
 	enum snd_compr_direction direction;
 	bool metadata_set;
 	bool next_track;
-	bool pause_in_draining;
 	void *private_data;
 #ifdef CONFIG_AUDIO_QGKI
 	struct snd_soc_pcm_runtime *be;
@@ -142,7 +140,6 @@ struct snd_compr_ops {
  * @direction: Playback or capture direction
  * @lock: device lock
  * @device: device id
- * @use_pause_in_draining: allow pause in draining, true when set
  */
 struct snd_compr {
 	const char *name;
@@ -153,7 +150,6 @@ struct snd_compr {
 	unsigned int direction;
 	struct mutex lock;
 	int device;
-	bool use_pause_in_draining;
 #ifdef CONFIG_SND_VERBOSE_PROCFS
 	/* private: */
 	char id[64];
@@ -210,6 +206,8 @@ static inline void snd_compr_set_runtime_buffer(
 
 int snd_compr_stop_error(struct snd_compr_stream *stream,
 			 snd_pcm_state_t state);
-
+#ifdef OPLUS_ARCH_EXTENDS
+		/* Apply CR#3693362 to fix CtsMediaAudioTestCases test fail */
 void snd_compr_use_pause_in_draining(struct snd_compr_stream *stream);
+#endif /*OPLUS_ARCH_EXTENDS*/
 #endif

@@ -32,9 +32,9 @@ endif
 endif
  endif
 
-ifeq ($(CONFIG_OPLUS_FINGERPRINT_QCOM),y)
+ifeq ($(CONFIG_OPPO_FINGERPRINT_QCOM),y)
 obj-$(CONFIG_OPLUS_FINGERPRINT_SILEAD)	+= silead_fp_platform.o
-else ifeq ($(CONFIG_OPLUS_FINGERPRINT_MTK),y)
+else ifeq ($(CONFIG_OPPO_FINGERPRINT_MTK),y)
 obj-y	+= silead_fp.o
 obj-$(CONFIG_SILEAD_FP_SPI)	+= silead_fp.o
 endif

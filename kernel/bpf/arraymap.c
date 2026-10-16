@@ -10,7 +10,7 @@
 #include <linux/filter.h>
 #include <linux/perf_event.h>
 #include <uapi/linux/btf.h>
-#include <linux/rcupdate_trace.h>
+#include <linux/rcupdate.h>
 
 #include "map_in_map.h"
 
@@ -73,9 +73,6 @@ int array_map_alloc_check(union bpf_attr *attr)
 		/* if value_size is bigger, the user space won't be able to
 		 * access the elements.
 		 */
-		return -E2BIG;
-	/* percpu map value size is bound by PCPU_MIN_UNIT_SIZE */
-	if (percpu && round_up(attr->value_size, 8) > PCPU_MIN_UNIT_SIZE)
 		return -E2BIG;
 
 	return 0;
@@ -768,6 +765,7 @@ int bpf_fd_array_map_update_elem(struct bpf_map *map, struct file *map_file,
 
 	if (old_ptr)
 		map->ops->map_fd_put_ptr(old_ptr);
+
 	return 0;
 }
 

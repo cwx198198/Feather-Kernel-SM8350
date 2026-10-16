@@ -9,11 +9,7 @@
 #include <linux/xattr.h>
 #include <linux/uio.h>
 #include <linux/uaccess.h>
-#include <linux/splice.h>
-#include <linux/mm.h>
-#include <linux/fs.h>
 #include "overlayfs.h"
-
 #define OVL_IOCB_MASK (IOCB_DSYNC | IOCB_HIPRI | IOCB_NOWAIT | IOCB_SYNC)
 
 static char ovl_whatisit(struct inode *inode, struct inode *realinode)
@@ -231,7 +227,8 @@ static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	ret = vfs_iter_read(real.file, iter, &iocb->ki_pos,
-			    iocb_to_rw_flags(iocb->ki_flags, OVL_IOCB_MASK));
+				    iocb_to_rw_flags(iocb->ki_flags,
+						     OVL_IOCB_MASK));
 	ovl_revert_creds(file_inode(file)->i_sb, old_cred);
 
 	ovl_file_accessed(file);

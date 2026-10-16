@@ -342,10 +342,6 @@ static inline void task_seccomp(struct seq_file *m, struct task_struct *p)
 	seq_put_decimal_ull(m, "NoNewPrivs:\t", task_no_new_privs(p));
 #ifdef CONFIG_SECCOMP
 	seq_put_decimal_ull(m, "\nSeccomp:\t", p->seccomp.mode);
-#ifdef CONFIG_SECCOMP_FILTER
-	seq_put_decimal_ull(m, "\nSeccomp_filters:\t",
-			    atomic_read(&p->seccomp.filter_count));
-#endif
 #endif
 	seq_puts(m, "\nSpeculation_Store_Bypass:\t");
 	switch (arch_prctl_spec_ctrl_get(p, PR_SPEC_STORE_BYPASS)) {
@@ -663,6 +659,25 @@ int proc_pid_statm(struct seq_file *m, struct pid_namespace *ns,
 
 	return 0;
 }
+
+#ifdef OPLUS_FEATURE_PERFORMANCE
+int proc_pid_statm_as(struct seq_file *m, struct pid_namespace *ns,
+		      struct pid *pid, struct task_struct *task)
+{
+	unsigned long size = 0;
+	struct mm_struct *mm = get_task_mm(task);
+
+	if (mm) {
+		size = get_mm_counter(mm, MM_ANONPAGES) +
+			get_mm_counter(mm, MM_SWAPENTS);
+		mmput(mm);
+	}
+	seq_put_decimal_ull(m, "", size);
+	seq_putc(m, '\n');
+
+	return 0;
+}
+#endif /* OPLUS_FEATURE_PERFORMANCE */
 
 #ifdef CONFIG_PROC_CHILDREN
 static struct pid *

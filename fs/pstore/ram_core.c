@@ -193,7 +193,7 @@ static int persistent_ram_init_ecc(struct persistent_ram_zone *prz,
 {
 	int numerr;
 	struct persistent_ram_buffer *buffer = prz->buffer;
-	size_t ecc_blocks;
+	int ecc_blocks;
 	size_t ecc_total;
 
 	if (!ecc_info || !ecc_info->ecc_size)
@@ -330,6 +330,9 @@ int notrace persistent_ram_write(struct persistent_ram_zone *prz,
 	buffer_size_add(prz, c);
 
 	start = buffer_start_add(prz, c);
+
+	if(unlikely(prz->buffer_size < start))
+		return 0;
 
 	rem = prz->buffer_size - start;
 	if (unlikely(rem < c)) {

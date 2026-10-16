@@ -256,10 +256,7 @@ void dwc3_ep0_stall_and_restart(struct dwc3 *dwc)
 		struct dwc3_request	*req;
 
 		req = next_request(&dep->pending_list);
-		if (!dwc->connected)
-			dwc3_gadget_giveback(dep, req, -ESHUTDOWN);
-		else
-			dwc3_gadget_giveback(dep, req, -ECONNRESET);
+		dwc3_gadget_giveback(dep, req, -ECONNRESET);
 	}
 
 	dwc->ep0state = EP0_SETUP_PHASE;
@@ -836,6 +833,17 @@ static int dwc3_ep0_set_isoch_delay(struct dwc3 *dwc, struct usb_ctrlrequest *ct
 	return 0;
 }
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+/*BSP.CHG.Basic. 20210528 add for chg*/
+int usb_enum_status = 0;
+int get_usb_enum_status(void)
+{
+	printk("usb_enum_status:%d\n", usb_enum_status);
+	return usb_enum_status;
+}
+EXPORT_SYMBOL(get_usb_enum_status);
+#endif
+
 static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 {
 	int ret;
@@ -851,6 +859,11 @@ static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 		ret = dwc3_ep0_handle_feature(dwc, ctrl, 1);
 		break;
 	case USB_REQ_SET_ADDRESS:
+#ifdef OPLUS_FEATURE_CHG_BASIC
+/*BSP.CHG.Basic.  add for chg*/
+		usb_enum_status = 1;
+		printk("usb_enum!!:%d\n", usb_enum_status);
+#endif
 		ret = dwc3_ep0_set_address(dwc, ctrl);
 		break;
 	case USB_REQ_SET_CONFIGURATION:

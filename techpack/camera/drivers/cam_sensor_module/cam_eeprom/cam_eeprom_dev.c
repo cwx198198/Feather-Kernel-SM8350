@@ -10,6 +10,8 @@
 #include "cam_debug_util.h"
 #include "camera_main.h"
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
+#include "cam_compat.h"
+static bool gProbe_done;
 extern bool chip_version_old;
 #endif
 
@@ -559,7 +561,7 @@ static void cam_eeprom_component_unbind(struct device *dev,
 	kfree(soc_info->soc_private);
 	kfree(e_ctrl->io_master_info.cci_client);
 #ifdef OPLUS_FEATURE_CAMERA_COMMON
-        kfree(e_ctrl->io_master_info_ois.cci_client);
+        kfree(e_ctrl->io_master_info.cci_client);
 #endif
 	platform_set_drvdata(pdev, NULL);
 	v4l2_set_subdevdata(&e_ctrl->v4l2_dev_str.sd, NULL);
@@ -581,6 +583,9 @@ static int32_t cam_eeprom_platform_driver_probe(
 	if (rc)
 		CAM_ERR(CAM_EEPROM, "failed to add component rc: %d", rc);
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	gProbe_done = true;
+#endif
 	return rc;
 }
 
@@ -636,6 +641,10 @@ int cam_eeprom_driver_init(void)
 {
 	int rc = 0;
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	void *drv_ptr = NULL;
+	gProbe_done = false;
+#endif
 	rc = platform_driver_register(&cam_eeprom_platform_driver);
 	if (rc < 0) {
 		CAM_ERR(CAM_EEPROM, "platform_driver_register failed rc = %d",
@@ -655,6 +664,13 @@ int cam_eeprom_driver_init(void)
 		return rc;
 	}
 
+#ifdef OPLUS_FEATURE_CAMERA_COMMON
+	if (gProbe_done == false) {
+		CAM_ERR(CAM_SENSOR, "%s deferred probe", cam_eeprom_platform_driver.driver.name);
+		drv_ptr = (void*)&(cam_eeprom_platform_driver.driver);
+		dev_defer_supplier_debug(drv_ptr);
+	}
+#endif
 	return rc;
 }
 

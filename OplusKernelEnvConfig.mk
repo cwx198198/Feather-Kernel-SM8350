@@ -1,4 +1,4 @@
-# Copyright (C), 2008-2030, OPLUS Mobile Comm Corp., Ltd
+# Copyright (C), 2008-2030, OPPO Mobile Comm Corp., Ltd
 ### All rights reserved.
 ###
 ### File: - OplusKernelEnvConfig.mk
@@ -113,18 +113,22 @@ OPLUS_FEATURE_ADSP_RECOVERY \
 OPLUS_FEATURE_MODEM_MINIDUMP \
 OPLUS_FEATURE_DATA_EVAL \
 OPLUS_FEATURE_WIFI_DCS_SWITCH \
+OPLUS_FEATURE_SOFTAP_DCS_SWITCH \
 OPLUS_FEATURE_WIFI_MINIDUMP \
 OPLUS_FEATURE_APP_MONITOR \
 OPLUS_FEATURE_PXLW_IRIS5 \
 OPLUS_FEATURE_MIC_VA_MIC_CLK_SWITCH \
 OPLUS_FEATURE_CPUFREQ_BOUNCING \
-OPLUS_FEATURE_DNS_HOOK\
-OPLUS_FEATURE_SENSOR_FEEDBACK
+OPLUS_FEATURE_DNS_HOOK \
+OPLUS_FEATURE_SENSOR_FEEDBACK \
+OPLUS_FEATURE_DATA_MODULE \
+OPLUS_FEATURE_LINKPOWER_MODULE
 
 
 #only declare a macro if nativefeature is define and also added in above ALLOWED_MCROS
 $(foreach myfeature,$(ALLOWED_MCROS),\
     $(if $(strip $($(myfeature))),\
+         $(warning make $(myfeature) to be a macro here) \
          $(eval KBUILD_CFLAGS += -D$(myfeature)) \
          $(eval KBUILD_CPPFLAGS += -D$(myfeature)) \
          $(eval CFLAGS_KERNEL += -D$(myfeature)) \
@@ -163,8 +167,14 @@ ifeq ($(OPLUS_FEATURE_SECURE_KEYINTERFACESGUARD),yes)
 KBUILD_CFLAGS += -DOPLUS_DISALLOW_KEY_INTERFACES
 endif
 
+$(warning "OPLUS_VND_ENV_CHG_OP9RT_PMIC_VOOCPHY is $(strip $(OPLUS_VND_ENV_CHG_OP9RT_PMIC_VOOCPHY))")
 ifeq ($(OPLUS_VND_ENV_CHG_OP9RT_PMIC_VOOCPHY),yes)
 export CONFIG_OPLUS_CHG_OP9RT_PMIC_VOOCPHY=y
+endif
+
+$(warning "OPLUS_VND_ENV_CHG_OP9_PRO is $(strip $(OPLUS_VND_ENV_CHG_OP9_PRO))")
+ifeq ($(OPLUS_VND_ENV_CHG_OP9_PRO),yes)
+export CONFIG_CHG_FOR_OP9_PRO=y
 endif
 
 KBUILD_CFLAGS += -DOPLUS_FEATURE_LOWMEM_DBG

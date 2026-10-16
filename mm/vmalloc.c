@@ -41,6 +41,11 @@
 #include <asm/shmparam.h>
 
 #include "internal.h"
+#if defined(OPLUS_FEATURE_MEMLEAK_DETECT) && defined(CONFIG_VMALLOC_DEBUG)
+/* used for vmalloc_debug */
+static unsigned int save_vmalloc_stack(unsigned long flags, struct vmap_area *va);
+static void dec_vmalloc_stat(struct vmap_area *va);
+#endif
 
 struct vfree_deferred {
 	struct llist_head list;
@@ -2092,11 +2097,19 @@ EXPORT_SYMBOL_GPL(map_vm_area);
 static void setup_vmalloc_vm(struct vm_struct *vm, struct vmap_area *va,
 			      unsigned long flags, const void *caller)
 {
+#if defined(OPLUS_FEATURE_MEMLEAK_DETECT) && defined(CONFIG_VMALLOC_DEBUG)
+	/* save vmalloc called stack. */
+	unsigned int handle = save_vmalloc_stack(flags, va);
+#endif
 	spin_lock(&vmap_area_lock);
 	vm->flags = flags;
 	vm->addr = (void *)va->va_start;
 	vm->size = va->va_end - va->va_start;
 	vm->caller = caller;
+#if defined(OPLUS_FEATURE_MEMLEAK_DETECT) && defined(CONFIG_VMALLOC_DEBUG)
+	/* save stach hash*/
+	vm->hash = handle;
+#endif
 	va->vm = vm;
 	spin_unlock(&vmap_area_lock);
 }
@@ -2240,6 +2253,10 @@ struct vm_struct *remove_vm_area(const void *addr)
 	if (va && va->vm) {
 		struct vm_struct *vm = va->vm;
 
+#if defined(OPLUS_FEATURE_MEMLEAK_DETECT) && defined(CONFIG_VMALLOC_DEBUG)
+		/* update the count while vfree */
+		dec_vmalloc_stat(va);
+#endif
 		va->vm = NULL;
 		spin_unlock(&vmap_area_lock);
 
@@ -2643,9 +2660,9 @@ static void *__vmalloc_node(unsigned long size, unsigned long align,
 #endif
 }
 
-void *__vmalloc(unsigned long size, gfp_t gfp_mask)
+void *__vmalloc(unsigned long size, gfp_t gfp_mask, pgprot_t prot)
 {
-	return __vmalloc_node(size, 1, gfp_mask, PAGE_KERNEL, NUMA_NO_NODE,
+	return __vmalloc_node(size, 1, gfp_mask, prot, NUMA_NO_NODE,
 				__builtin_return_address(0));
 }
 EXPORT_SYMBOL(__vmalloc);
@@ -2761,26 +2778,6 @@ void *vzalloc_node(unsigned long size, int node)
 			 GFP_KERNEL | __GFP_ZERO);
 }
 EXPORT_SYMBOL(vzalloc_node);
-
-/**
- * vmalloc_user_node_flags - allocate memory for userspace on a specific node
- * @size: allocation size
- * @node: numa node
- * @flags: flags for the page level allocator
- *
- * The resulting memory area is zeroed so it can be mapped to userspace
- * without leaking data.
- *
- * Return: pointer to the allocated memory or %NULL on error
- */
-void *vmalloc_user_node_flags(unsigned long size, int node, gfp_t flags)
-{
-	return __vmalloc_node_range(size, SHMLBA,  VMALLOC_START, VMALLOC_END,
-				    flags | __GFP_ZERO, PAGE_KERNEL,
-				    VM_USERMAP, node,
-				    __builtin_return_address(0));
-}
-EXPORT_SYMBOL(vmalloc_user_node_flags);
 
 /**
  * vmalloc_exec - allocate virtually contiguous, executable memory
@@ -3621,7 +3618,11 @@ static int s_show(struct seq_file *m, void *p)
 	seq_printf(m, "0x%pK-0x%pK %7ld",
 		v->addr, v->addr + v->size, v->size);
 
-	if (v->caller)
+#ifdef OPLUS_FEATURE_PERFORMANCE
+    if (v->caller && (strcmp(current->comm, "android.bg") != 0))
+#else
+    if (v->caller)
+#endif
 		seq_printf(m, " %pS", v->caller);
 
 	if (v->nr_pages)
@@ -3685,4 +3686,16 @@ static int __init proc_vmalloc_init(void)
 }
 module_init(proc_vmalloc_init);
 
+#endif
+#ifdef CONFIG_VMALLOC_DEBUG
+#ifdef OPLUS_FEATURE_MEMLEAK_DETECT
+#include "malloc_track/vmalloc_track.c"
+#else
+int __init __weak create_vmalloc_debug(struct proc_dir_entry *parent)
+{
+	pr_warn("OPLUS_FEATURE_MEMLEAK_DETECT is off.\n");
+	return 0;
+}
+EXPORT_SYMBOL(create_vmalloc_debug);
+#endif
 #endif

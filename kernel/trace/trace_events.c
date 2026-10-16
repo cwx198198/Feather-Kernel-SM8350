@@ -405,9 +405,7 @@ static int __ftrace_event_enable_disable(struct trace_event_file *file,
 				clear_bit(EVENT_FILE_FL_RECORDED_TGID_BIT, &file->flags);
 			}
 
-			ret = call->class->reg(call, TRACE_REG_UNREGISTER, file);
-
-			WARN_ON_ONCE(ret);
+			call->class->reg(call, TRACE_REG_UNREGISTER, file);
 		}
 		/* If in SOFT_MODE, just set the SOFT_DISABLE_BIT, else clear it */
 		if (file->flags & EVENT_FILE_FL_SOFT_MODE)
@@ -1701,10 +1699,9 @@ static const struct file_operations ftrace_set_event_pid_fops = {
 };
 
 static const struct file_operations ftrace_enable_fops = {
-	.open = tracing_open_file_tr,
+	.open = tracing_open_generic,
 	.read = event_enable_read,
 	.write = event_enable_write,
-	.release = tracing_release_file_tr,
 	.llseek = default_llseek,
 };
 
@@ -1721,10 +1718,9 @@ static const struct file_operations ftrace_event_id_fops = {
 };
 
 static const struct file_operations ftrace_event_filter_fops = {
-	.open = tracing_open_file_tr,
+	.open = tracing_open_generic,
 	.read = event_filter_read,
 	.write = event_filter_write,
-	.release = tracing_release_file_tr,
 	.llseek = default_llseek,
 };
 
@@ -2097,10 +2093,7 @@ __register_event(struct trace_event_call *call, struct module *mod)
 	if (ret < 0)
 		return ret;
 
-	down_write(&trace_event_sem);
 	list_add(&call->list, &ftrace_events);
-	up_write(&trace_event_sem);
-
 	call->mod = mod;
 
 	return 0;
@@ -2241,7 +2234,6 @@ void trace_event_eval_update(struct trace_eval_map **map, int len)
 				update_event_printk(call, map[i]);
 			}
 		}
-		cond_resched();
 	}
 	up_write(&trace_event_sem);
 }
@@ -2463,7 +2455,7 @@ static int trace_module_notify(struct notifier_block *self,
 	mutex_unlock(&trace_types_lock);
 	mutex_unlock(&event_mutex);
 
-	return NOTIFY_OK;
+	return 0;
 }
 
 static struct notifier_block trace_module_nb = {
@@ -2478,8 +2470,6 @@ __trace_add_event_dirs(struct trace_array *tr)
 {
 	struct trace_event_call *call;
 	int ret;
-
-	lockdep_assert_held(&trace_event_sem);
 
 	list_for_each_entry(call, &ftrace_events, list) {
 		ret = __trace_add_new_event(call, tr);

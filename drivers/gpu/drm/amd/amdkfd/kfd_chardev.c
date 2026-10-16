@@ -49,7 +49,7 @@ static const char kfd_dev_name[] = "kfd";
 static const struct file_operations kfd_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = kfd_ioctl,
-	.compat_ioctl = compat_ptr_ioctl,
+	.compat_ioctl = kfd_ioctl,
 	.open = kfd_open,
 	.mmap = kfd_mmap,
 };
@@ -167,11 +167,6 @@ static int set_queue_properties_from_user(struct queue_properties *q_properties,
 	if (!is_power_of_2(args->ring_size) && (args->ring_size != 0)) {
 		pr_err("Ring size must be a power of 2 or 0\n");
 		return -EINVAL;
-	}
-
-	if (args->ring_size < KFD_MIN_QUEUE_RING_SIZE) {
-		args->ring_size = KFD_MIN_QUEUE_RING_SIZE;
-		pr_debug("Size lower. clamped to KFD_MIN_QUEUE_RING_SIZE");
 	}
 
 	if (!access_ok((const void __user *) args->read_pointer_address,
@@ -376,11 +371,6 @@ static int kfd_ioctl_update_queue(struct file *filp, struct kfd_process *p,
 	if (!is_power_of_2(args->ring_size) && (args->ring_size != 0)) {
 		pr_err("Ring size must be a power of 2 or 0\n");
 		return -EINVAL;
-	}
-
-	if (args->ring_size < KFD_MIN_QUEUE_RING_SIZE) {
-		args->ring_size = KFD_MIN_QUEUE_RING_SIZE;
-		pr_debug("Size lower. clamped to KFD_MIN_QUEUE_RING_SIZE");
 	}
 
 	properties.queue_address = args->ring_base_address;
@@ -948,8 +938,8 @@ static int kfd_ioctl_get_process_apertures_new(struct file *filp,
 	 * nodes, but not more than args->num_of_nodes as that is
 	 * the amount of memory allocated by user
 	 */
-	pa = kcalloc(args->num_of_nodes, sizeof(struct kfd_process_device_apertures),
-		     GFP_KERNEL);
+	pa = kzalloc((sizeof(struct kfd_process_device_apertures) *
+				args->num_of_nodes), GFP_KERNEL);
 	if (!pa)
 		return -ENOMEM;
 
@@ -1288,7 +1278,7 @@ static int kfd_ioctl_alloc_memory_of_gpu(struct file *filep,
 		if (args->size != PAGE_SIZE)
 			return -EINVAL;
 		offset = amdgpu_amdkfd_get_mmio_remap_phys_addr(dev->kgd);
-		if (!offset || (PAGE_SIZE > 4096))
+		if (!offset)
 			return -ENOMEM;
 	}
 
@@ -1796,10 +1786,8 @@ static long kfd_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 	unsigned int usize, asize;
 	int retcode = -EINVAL;
 
-	if (nr >= AMDKFD_CORE_IOCTL_COUNT) {
-		retcode = -ENOTTY;
+	if (nr >= AMDKFD_CORE_IOCTL_COUNT)
 		goto err_i1;
-	}
 
 	if ((nr >= AMDKFD_COMMAND_START) && (nr < AMDKFD_COMMAND_END)) {
 		u32 amdkfd_size;
@@ -1812,10 +1800,8 @@ static long kfd_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 			asize = amdkfd_size;
 
 		cmd = ioctl->cmd;
-	} else {
-		retcode = -ENOTTY;
+	} else
 		goto err_i1;
-	}
 
 	dev_dbg(kfd_device, "ioctl cmd 0x%x (#%d), arg 0x%lx\n", cmd, nr, arg);
 
@@ -1884,9 +1870,6 @@ static int kfd_mmio_mmap(struct kfd_dev *dev, struct kfd_process *process,
 	int ret;
 
 	if (vma->vm_end - vma->vm_start != PAGE_SIZE)
-		return -EINVAL;
-
-	if (PAGE_SIZE > 4096)
 		return -EINVAL;
 
 	address = amdgpu_amdkfd_get_mmio_remap_phys_addr(dev->kgd);

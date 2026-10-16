@@ -108,7 +108,7 @@ long get_nr_dirty_inodes(void)
  */
 #ifdef CONFIG_SYSCTL
 int proc_nr_inodes(struct ctl_table *table, int write,
-		   void *buffer, size_t *lenp, loff_t *ppos)
+		   void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	inodes_stat.nr_inodes = get_nr_inodes();
 	inodes_stat.nr_unused = get_nr_inodes_unused();
@@ -202,6 +202,10 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	if (unlikely(security_inode_alloc(inode)))
 		return -ENOMEM;
 	this_cpu_inc(nr_inodes);
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	/* for cont-pte file hugepage */
+	inode->may_cont_pte = 0;
+#endif
 
 	return 0;
 }
@@ -451,39 +455,6 @@ static void inode_lru_list_del(struct inode *inode)
 		this_cpu_dec(nr_unused);
 }
 
-static void inode_pin_lru_isolating(struct inode *inode)
-{
-	lockdep_assert_held(&inode->i_lock);
-	WARN_ON(inode->i_state & (I_LRU_ISOLATING | I_FREEING | I_WILL_FREE));
-	inode->i_state |= I_LRU_ISOLATING;
-}
-
-static void inode_unpin_lru_isolating(struct inode *inode)
-{
-	spin_lock(&inode->i_lock);
-	WARN_ON(!(inode->i_state & I_LRU_ISOLATING));
-	inode->i_state &= ~I_LRU_ISOLATING;
-	smp_mb();
-	wake_up_bit(&inode->i_state, __I_LRU_ISOLATING);
-	spin_unlock(&inode->i_lock);
-}
-
-static void inode_wait_for_lru_isolating(struct inode *inode)
-{
-	spin_lock(&inode->i_lock);
-	if (inode->i_state & I_LRU_ISOLATING) {
-		DEFINE_WAIT_BIT(wq, &inode->i_state, __I_LRU_ISOLATING);
-		wait_queue_head_t *wqh;
-
-		wqh = bit_waitqueue(&inode->i_state, __I_LRU_ISOLATING);
-		spin_unlock(&inode->i_lock);
-		__wait_on_bit(wqh, &wq, bit_wait, TASK_UNINTERRUPTIBLE);
-		spin_lock(&inode->i_lock);
-		WARN_ON(inode->i_state & I_LRU_ISOLATING);
-	}
-	spin_unlock(&inode->i_lock);
-}
-
 /**
  * inode_sb_list_add - add inode to the superblock list of inodes
  * @inode: inode to add
@@ -560,7 +531,18 @@ void clear_inode(struct inode *inode)
 	 */
 	xa_lock_irq(&inode->i_data.i_pages);
 	BUG_ON(inode->i_data.nrpages);
+#ifndef CONFIG_CONT_PTE_HUGEPAGE
 	BUG_ON(inode->i_data.nrexceptional);
+#else
+	/*
+	 * Almost always, mapping_empty(&inode->i_data) here; but there are
+	 * two known and long-standing ways in which nodes may get left behind
+	 * (when deep radix-tree node allocation failed partway; or when THP
+	 * collapse_file() failed). Until those two known cases are cleaned up,
+	 * or a cleanup function is called here, do not BUG_ON(!mapping_empty),
+	 * nor even WARN_ON(!mapping_empty).
+	 */
+#endif
 	xa_unlock_irq(&inode->i_data.i_pages);
 	BUG_ON(!list_empty(&inode->i_data.private_list));
 	BUG_ON(!(inode->i_state & I_FREEING));
@@ -595,8 +577,6 @@ static void evict(struct inode *inode)
 		inode_io_list_del(inode);
 
 	inode_sb_list_del(inode);
-
-	inode_wait_for_lru_isolating(inode);
 
 	/*
 	 * Wait for flusher thread to be done with the inode so that filesystem
@@ -668,10 +648,6 @@ again:
 			continue;
 
 		spin_lock(&inode->i_lock);
-		if (atomic_read(&inode->i_count)) {
-			spin_unlock(&inode->i_lock);
-			continue;
-		}
 		if (inode->i_state & (I_NEW | I_FREEING | I_WILL_FREE)) {
 			spin_unlock(&inode->i_lock);
 			continue;
@@ -801,7 +777,7 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 	}
 
 	if (inode_has_buffers(inode) || inode->i_data.nrpages) {
-		inode_pin_lru_isolating(inode);
+		__iget(inode);
 		spin_unlock(&inode->i_lock);
 		spin_unlock(lru_lock);
 		if (remove_inode_buffers(inode)) {
@@ -814,7 +790,7 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 			if (current->reclaim_state)
 				current->reclaim_state->reclaimed_slab += reap;
 		}
-		inode_unpin_lru_isolating(inode);
+		iput(inode);
 		spin_lock(lru_lock);
 		return LRU_RETRY;
 	}
@@ -2140,6 +2116,10 @@ void inode_init_owner(struct inode *inode, const struct inode *dir,
 		/* Directories are special, and always inherit S_ISGID */
 		if (S_ISDIR(mode))
 			mode |= S_ISGID;
+		else if ((mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP) &&
+			 !in_group_p(inode->i_gid) &&
+			 !capable_wrt_inode_uidgid(dir, CAP_FSETID))
+			mode &= ~S_ISGID;
 	} else
 		inode->i_gid = current_fsgid();
 	inode->i_mode = mode;
@@ -2395,31 +2375,3 @@ int vfs_ioc_fssetxattr_check(struct inode *inode, const struct fsxattr *old_fa,
 	return 0;
 }
 EXPORT_SYMBOL(vfs_ioc_fssetxattr_check);
-
-/**
- * mode_strip_sgid - handle the sgid bit for non-directories
- * @dir: parent directory inode
- * @mode: mode of the file to be created in @dir
- *
- * If the @mode of the new file has both the S_ISGID and S_IXGRP bit
- * raised and @dir has the S_ISGID bit raised ensure that the caller is
- * either in the group of the parent directory or they have CAP_FSETID
- * in their user namespace and are privileged over the parent directory.
- * In all other cases, strip the S_ISGID bit from @mode.
- *
- * Return: the new mode to use for the file
- */
-umode_t mode_strip_sgid(const struct inode *dir, umode_t mode)
-{
-	if ((mode & (S_ISGID | S_IXGRP)) != (S_ISGID | S_IXGRP))
-		return mode;
-	if (S_ISDIR(mode) || !dir || !(dir->i_mode & S_ISGID))
-		return mode;
-	if (in_group_p(dir->i_gid))
-		return mode;
-	if (capable_wrt_inode_uidgid(dir, CAP_FSETID))
-		return mode;
-
-	return mode & ~S_ISGID;
-}
-EXPORT_SYMBOL(mode_strip_sgid);

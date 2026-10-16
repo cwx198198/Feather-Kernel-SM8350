@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -378,6 +377,8 @@ enum dsi_cmd_set_type {
 	/* Add for 21005 esd check switch page */
 	DSI_CMD_ESD_SWITCH_PAGE,
 	DSI_CMD_FPS_CHANGE,
+	DSI_CMD_PANEL_INFO_SWITCH_PAGE,
+	DSI_CMD_DEFAULT_SWITCH_PAGE,
 #endif
 
 	DSI_CMD_SET_MAX
@@ -566,7 +567,6 @@ struct dsi_split_link_config {
  * @append_tx_eot:       Append EOT packets for forward transmissions if set to
  *                       true.
  * @ext_bridge_mode:     External bridge is connected.
- * @ext_bridge_hpd_en:   Enable hpd for external bridge.
  * @force_hs_clk_lane:   Send continuous clock to the panel.
  * @phy_type:            DPHY/CPHY is enabled for this panel.
  * @dsi_split_link_config:  Split Link Configuration.
@@ -597,7 +597,6 @@ struct dsi_host_common_cfg {
 	bool ignore_rx_eot;
 	bool append_tx_eot;
 	bool ext_bridge_mode;
-	bool ext_bridge_hpd_en;
 	bool force_hs_clk_lane;
 	enum dsi_phy_type phy_type;
 	struct dsi_split_link_config split_link;

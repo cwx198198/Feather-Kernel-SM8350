@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/firmware.h>
@@ -9,13 +9,9 @@
 
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_BDF)
 //Modify for: multi projects using different bdf
-#include <soc/oplus/oplus_project.h>
+#include <soc/oppo/oppo_project.h>
 #include <linux/fs.h>
 #endif /* CONFIG_OPLUS_FEATURE_WIFI_BDF */
-
-#if IS_ENABLED(CONFIG_CNSS_UTILS)
-#include <net/cnss_utils.h>
-#endif
 
 #include "bus.h"
 #include "debug.h"
@@ -966,13 +962,6 @@ int cnss_wlfw_wlan_mac_req_send_sync(struct cnss_plat_data *plat_priv,
 #endif /* CONFIG_OPLUS_FEATURE_WIFI_MAC */
 	req.mac_addr_valid = 1;
 
-#if IS_ENABLED(CONFIG_CNSS_UTILS)
-	ret = cnss_utils_set_wlan_mac_address(req.mac_addr, mac_len);
-	if (ret < 0) {
-		cnss_pr_err("Failed to set cnss utils wlan mac address (non-fatal), err: %d\n", ret);
-	}
-#endif
-
 	ret = qmi_send_request(&plat_priv->qmi_wlfw, NULL, &txn,
 			       QMI_WLFW_MAC_ADDR_REQ_V01,
 			       WLFW_MAC_ADDR_REQ_MSG_V01_MAX_MSG_LEN,
@@ -1077,7 +1066,7 @@ int cnss_wlfw_qdss_data_send_sync(struct cnss_plat_data *plat_priv, char *file_n
 		   (resp->seg_id_valid == 1 && resp->seg_id == req->seg_id) &&
 		   (resp->data_valid == 1 &&
 		    resp->data_len <= QMI_WLFW_MAX_DATA_SIZE_V01) &&
-		   resp->data_len <= remaining) {
+		    resp->data_len <= remaining) {
 			memcpy(p_qdss_trace_data_temp,
 			       resp->data, resp->data_len);
 		} else {
@@ -2097,72 +2086,6 @@ int cnss_wlfw_qdss_trace_mem_info_send_sync(struct cnss_plat_data *plat_priv)
 	kfree(resp);
 	return 0;
 
-out:
-	kfree(req);
-	kfree(resp);
-	return ret;
-}
-
-int cnss_wlfw_send_host_wfc_call_status(struct cnss_plat_data *plat_priv,
-					struct cnss_wfc_cfg cfg)
-{
-	struct wlfw_wfc_call_status_req_msg_v01 *req;
-	struct wlfw_wfc_call_status_resp_msg_v01 *resp;
-	struct qmi_txn txn;
-	int ret = 0;
-
-	if (!test_bit(CNSS_FW_READY, &plat_priv->driver_state)) {
-		cnss_pr_err("Drop host WFC indication as FW not initialized\n");
-		return -EINVAL;
-	}
-	req = kzalloc(sizeof(*req), GFP_KERNEL);
-	if (!req)
-		return -ENOMEM;
-
-	resp = kzalloc(sizeof(*resp), GFP_KERNEL);
-	if (!resp) {
-		kfree(req);
-		return -ENOMEM;
-	}
-
-	req->wfc_call_active_valid = 1;
-	req->wfc_call_active = cfg.mode;
-	cnss_pr_dbg("CNSS->FW: WFC_CALL_REQ: state: 0x%lx\n",
-		    plat_priv->driver_state);
-	ret = qmi_txn_init(&plat_priv->qmi_wlfw, &txn,
-			   wlfw_wfc_call_status_resp_msg_v01_ei, resp);
-	if (ret < 0) {
-		cnss_pr_err("CNSS->FW: WFC_CALL_REQ: QMI Txn Init: Err %d\n",
-			    ret);
-		goto out;
-	}
-
-	cnss_pr_dbg("Send WFC Mode: %d\n", cfg.mode);
-	ret = qmi_send_request(&plat_priv->qmi_wlfw, NULL, &txn,
-			       QMI_WLFW_WFC_CALL_STATUS_REQ_V01,
-			       WLFW_WFC_CALL_STATUS_REQ_MSG_V01_MAX_MSG_LEN,
-			       wlfw_wfc_call_status_req_msg_v01_ei, req);
-	if (ret < 0) {
-		qmi_txn_cancel(&txn);
-		cnss_pr_err("CNSS->FW: WFC_CALL_REQ: QMI Send Err: %d\n",
-			    ret);
-		goto out;
-	}
-
-	ret = qmi_txn_wait(&txn, QMI_WLFW_TIMEOUT_JF);
-	if (ret < 0) {
-		cnss_pr_err("FW->CNSS: WFC_CALL_RSP: QMI Wait Err: %d\n",
-			    ret);
-		goto out;
-	}
-
-	if (resp->resp.result != QMI_RESULT_SUCCESS_V01) {
-		cnss_pr_err("FW->CNSS: WFC_CALL_RSP: Result: %d Err: %d\n",
-			    resp->resp.result, resp->resp.error);
-		ret = -EINVAL;
-		goto out;
-	}
-	ret = 0;
 out:
 	kfree(req);
 	kfree(resp);

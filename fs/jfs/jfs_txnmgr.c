@@ -272,15 +272,14 @@ int txInit(void)
 	if (TxBlock == NULL)
 		return -ENOMEM;
 
-	for (k = 0; k < nTxBlock; k++) {
+	for (k = 1; k < nTxBlock - 1; k++) {
+		TxBlock[k].next = k + 1;
 		init_waitqueue_head(&TxBlock[k].gcwait);
 		init_waitqueue_head(&TxBlock[k].waitor);
 	}
-
-	for (k = 1; k < nTxBlock - 1; k++) {
-		TxBlock[k].next = k + 1;
-	}
 	TxBlock[k].next = 0;
+	init_waitqueue_head(&TxBlock[k].gcwait);
+	init_waitqueue_head(&TxBlock[k].waitor);
 
 	TxAnchor.freetid = 1;
 	init_waitqueue_head(&TxAnchor.freewait);
@@ -354,11 +353,6 @@ tid_t txBegin(struct super_block *sb, int flag)
 
 	jfs_info("txBegin: flag = 0x%x", flag);
 	log = JFS_SBI(sb)->log;
-
-	if (!log) {
-		jfs_error(sb, "read-only filesystem\n");
-		return 0;
-	}
 
 	TXN_LOCK();
 

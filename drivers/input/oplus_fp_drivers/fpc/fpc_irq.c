@@ -1,7 +1,7 @@
 /************************************************************************************
 ** File: - drivers\input\fpc_tee\fpc_irq.c
 ** OPLUS_FEATURE_FINGERPRINT
-** Copyright (C), 2008-2016, OPLUS Mobile Comm Corp., Ltd
+** Copyright (C), 2008-2016, OPPO Mobile Comm Corp., Ltd
 **
 ** Description:
 **      fpc fingerprint kernel device driver
@@ -44,7 +44,7 @@
 #include <linux/pm_wakeup.h>
 #include <linux/spi/spi.h>
 #include "../include/oplus_fp_common.h"
-#include <soc/oplus/oplus_project.h>
+#include <soc/oppo/oppo_project.h>
 
 #define FPC_IRQ_DEV_NAME    "fpc_irq"
 
@@ -930,7 +930,7 @@ MODULE_DEVICE_TABLE(of, fpc1020_of_match);
 
 static struct of_device_id fpc1020_spi_of_match[] = {
         { .compatible = "fpc,fpc1020", },
-        { .compatible = "oplus,oplus_fp" },
+        { .compatible = "oppo,oppo_fp" },
         {}
 };
 

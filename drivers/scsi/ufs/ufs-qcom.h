@@ -221,10 +221,10 @@ static inline void ufs_qcom_assert_reset(struct ufs_hba *hba)
 			1 << OFFSET_UFS_PHY_SOFT_RESET, REG_UFS_CFG1);
 
 	/*
-	 * Dummy read to ensure the write takes effect before doing any sort
-	 * of delay
+	 * Make sure assertion of ufs phy reset is written to
+	 * register before returning
 	 */
-	ufshcd_readl(hba, REG_UFS_CFG1);
+	mb();
 }
 
 static inline void ufs_qcom_deassert_reset(struct ufs_hba *hba)
@@ -233,10 +233,10 @@ static inline void ufs_qcom_deassert_reset(struct ufs_hba *hba)
 			0 << OFFSET_UFS_PHY_SOFT_RESET, REG_UFS_CFG1);
 
 	/*
-	 * Dummy read to ensure the write takes effect before doing any sort
-	 * of delay
+	 * Make sure de-assertion of ufs phy reset is written to
+	 * register before returning
 	 */
-	ufshcd_readl(hba, REG_UFS_CFG1);
+	mb();
 }
 
 struct ufs_qcom_bus_vote {
@@ -443,6 +443,10 @@ static inline int ufshcd_dme_rmw(struct ufs_hba *hba, u32 mask,
 out:
 	return err;
 }
+
+/*feature-memorymonitor-v001-1-begin*/
+#define UFS_IOCTL_MONITOR       0x5392  /* For monitor access */
+/*feature-memorymonitor-v001-1-end*/
 
 #ifndef OPLUS_FEATURE_UFSPLUS
 /*

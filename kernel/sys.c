@@ -622,6 +622,10 @@ SYSCALL_DEFINE1(setuid, uid_t, uid)
  * This function implements a generic ability to update ruid, euid,
  * and suid.  This allows you to implement the 4.4 compatible seteuid().
  */
+#ifdef CONFIG_KSU
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+#endif
+
 long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 {
 	struct user_namespace *ns = current_user_ns();
@@ -629,6 +633,10 @@ long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 	struct cred *new;
 	int retval;
 	kuid_t kruid, keuid, ksuid;
+#ifdef CONFIG_KSU
+	(void)ksu_handle_setresuid(ruid, euid, suid);
+#endif
+
 
 	kruid = make_kuid(ns, ruid);
 	keuid = make_kuid(ns, euid);
@@ -687,18 +695,8 @@ error:
 	return retval;
 }
 
-#ifdef CONFIG_KSU
-extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-#endif
-
 SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 {
-#ifdef CONFIG_KSU_SUSFS
-	if (ksu_handle_setresuid(ruid, euid, suid)) {
-		pr_info("Something wrong with ksu_handle_setresuid()\\n");
-	}
-#endif
-
 	return __sys_setresuid(ruid, euid, suid);
 }
 
@@ -1250,20 +1248,24 @@ static int override_release(char __user *release, size_t len)
 	return ret;
 }
 
-#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-extern struct static_key_false susfs_is_uname_spoof_buffer_set;
-extern void susfs_spoof_uname(struct new_utsname* tmp);
-#endif
 SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
 	struct new_utsname tmp;
 
 	down_read(&uts_sem);
 	memcpy(&tmp, utsname(), sizeof(tmp));
-#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-	if (static_branch_likely(&susfs_is_uname_spoof_buffer_set))
-		susfs_spoof_uname(&tmp);
-#endif
+	/*
+	 * Android 25Q4 and later make netbpfload reject kernels older than
+	 * 5.10 based solely on uname(2).  This 5.4 vendor kernel carries the
+	 * required 5.10 BPF backport, so expose the corresponding compatibility
+	 * level only to that loader.  Keep the real release visible everywhere
+	 * else: globally changing UTS_RELEASE would also change module vermagic
+	 * and userspace feature selection unrelated to BPF.
+	 */
+	if (!strcmp(current->comm, "netbpfload")) {
+		strscpy(tmp.release, "5.10.199-dsu-bpf-compat",
+			sizeof(tmp.release));
+	}
 	up_read(&uts_sem);
 	if (copy_to_user(name, &tmp, sizeof(tmp)))
 		return -EFAULT;
@@ -1733,87 +1735,74 @@ void getrusage(struct task_struct *p, int who, struct rusage *r)
 	struct task_struct *t;
 	unsigned long flags;
 	u64 tgutime, tgstime, utime, stime;
-	unsigned long maxrss;
-	struct mm_struct *mm;
-	struct signal_struct *sig = p->signal;
-	unsigned int seq = 0;
+	unsigned long maxrss = 0;
 
-retry:
-	memset(r, 0, sizeof(*r));
+	memset((char *)r, 0, sizeof (*r));
 	utime = stime = 0;
-	maxrss = 0;
 
 	if (who == RUSAGE_THREAD) {
 		task_cputime_adjusted(current, &utime, &stime);
 		accumulate_thread_rusage(p, r);
-		maxrss = sig->maxrss;
-		goto out_thread;
+		maxrss = p->signal->maxrss;
+		goto out;
 	}
 
-	flags = read_seqbegin_or_lock_irqsave(&sig->stats_lock, &seq);
+	if (!lock_task_sighand(p, &flags))
+		return;
 
 	switch (who) {
 	case RUSAGE_BOTH:
 	case RUSAGE_CHILDREN:
-		utime = sig->cutime;
-		stime = sig->cstime;
-		r->ru_nvcsw = sig->cnvcsw;
-		r->ru_nivcsw = sig->cnivcsw;
-		r->ru_minflt = sig->cmin_flt;
-		r->ru_majflt = sig->cmaj_flt;
-		r->ru_inblock = sig->cinblock;
-		r->ru_oublock = sig->coublock;
-		maxrss = sig->cmaxrss;
+		utime = p->signal->cutime;
+		stime = p->signal->cstime;
+		r->ru_nvcsw = p->signal->cnvcsw;
+		r->ru_nivcsw = p->signal->cnivcsw;
+		r->ru_minflt = p->signal->cmin_flt;
+		r->ru_majflt = p->signal->cmaj_flt;
+		r->ru_inblock = p->signal->cinblock;
+		r->ru_oublock = p->signal->coublock;
+		maxrss = p->signal->cmaxrss;
 
 		if (who == RUSAGE_CHILDREN)
 			break;
 		/* fall through */
 
 	case RUSAGE_SELF:
-		r->ru_nvcsw += sig->nvcsw;
-		r->ru_nivcsw += sig->nivcsw;
-		r->ru_minflt += sig->min_flt;
-		r->ru_majflt += sig->maj_flt;
-		r->ru_inblock += sig->inblock;
-		r->ru_oublock += sig->oublock;
-		if (maxrss < sig->maxrss)
-			maxrss = sig->maxrss;
-
-		rcu_read_lock();
-		__for_each_thread(sig, t)
+		thread_group_cputime_adjusted(p, &tgutime, &tgstime);
+		utime += tgutime;
+		stime += tgstime;
+		r->ru_nvcsw += p->signal->nvcsw;
+		r->ru_nivcsw += p->signal->nivcsw;
+		r->ru_minflt += p->signal->min_flt;
+		r->ru_majflt += p->signal->maj_flt;
+		r->ru_inblock += p->signal->inblock;
+		r->ru_oublock += p->signal->oublock;
+		if (maxrss < p->signal->maxrss)
+			maxrss = p->signal->maxrss;
+		t = p;
+		do {
 			accumulate_thread_rusage(t, r);
-		rcu_read_unlock();
-
+		} while_each_thread(p, t);
 		break;
 
 	default:
 		BUG();
 	}
+	unlock_task_sighand(p, &flags);
 
-	if (need_seqretry(&sig->stats_lock, seq)) {
-		seq = 1;
-		goto retry;
+out:
+	r->ru_utime = ns_to_timeval(utime);
+	r->ru_stime = ns_to_timeval(stime);
+
+	if (who != RUSAGE_CHILDREN) {
+		struct mm_struct *mm = get_task_mm(p);
+
+		if (mm) {
+			setmax_mm_hiwater_rss(&maxrss, mm);
+			mmput(mm);
+		}
 	}
-	done_seqretry_irqrestore(&sig->stats_lock, seq, flags);
-
-	if (who == RUSAGE_CHILDREN)
-		goto out_children;
-
-	thread_group_cputime_adjusted(p, &tgutime, &tgstime);
-	utime += tgutime;
-	stime += tgstime;
-
-out_thread:
-	mm = get_task_mm(p);
-	if (mm) {
-		setmax_mm_hiwater_rss(&maxrss, mm);
-		mmput(mm);
-	}
-
-out_children:
 	r->ru_maxrss = maxrss * (PAGE_SIZE / 1024); /* convert pages to KBs */
-	r->ru_utime = ns_to_kernel_old_timeval(utime);
-	r->ru_stime = ns_to_kernel_old_timeval(stime);
 }
 
 SYSCALL_DEFINE2(getrusage, int, who, struct rusage __user *, ru)
@@ -2295,10 +2284,17 @@ int __weak arch_prctl_spec_ctrl_set(struct task_struct *t, unsigned long which,
 }
 
 #ifdef CONFIG_MMU
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+static int prctl_update_vma_anon_name(struct vm_area_struct *vma,
+		struct vm_area_struct **prev,
+		unsigned long start, unsigned long end,
+		const char __user *name_addr, bool chp)
+#else
 static int prctl_update_vma_anon_name(struct vm_area_struct *vma,
 		struct vm_area_struct **prev,
 		unsigned long start, unsigned long end,
 		const char __user *name_addr)
+#endif
 {
 	struct mm_struct *mm = vma->vm_mm;
 	int error = 0;
@@ -2333,8 +2329,13 @@ static int prctl_update_vma_anon_name(struct vm_area_struct *vma,
 	}
 
 success:
-	if (!vma->vm_file)
+	if (!vma->vm_file) {
 		vma->anon_name = name_addr;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		if (chp)
+			vma->android_kabi_reserved2 = THP_SWAP_PRIO_MAGIC;
+#endif
+	}
 
 out:
 	if (error == -ENOMEM)
@@ -2342,8 +2343,13 @@ out:
 	return error;
 }
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+static int prctl_set_vma_anon_name(unsigned long start, unsigned long end,
+			unsigned long arg, bool chp)
+#else
 static int prctl_set_vma_anon_name(unsigned long start, unsigned long end,
 			unsigned long arg)
+#endif
 {
 	unsigned long tmp;
 	struct vm_area_struct *vma, *prev;
@@ -2379,8 +2385,13 @@ static int prctl_set_vma_anon_name(unsigned long start, unsigned long end,
 			tmp = end;
 
 		/* Here vma->vm_start <= start < tmp <= (end|vma->vm_end). */
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		error = prctl_update_vma_anon_name(vma, &prev, start, tmp,
+				(const char __user *)arg, chp);
+#else
 		error = prctl_update_vma_anon_name(vma, &prev, start, tmp,
 				(const char __user *)arg);
+#endif
 		if (error)
 			return error;
 		start = tmp;
@@ -2403,6 +2414,9 @@ static int prctl_set_vma(unsigned long opt, unsigned long start,
 	int error;
 	unsigned long len;
 	unsigned long end;
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	bool chp = false;
+#endif
 
 	if (start & ~PAGE_MASK)
 		return -EINVAL;
@@ -2419,11 +2433,20 @@ static int prctl_set_vma(unsigned long opt, unsigned long start,
 	if (end == start)
 		return 0;
 
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+	if (opt == PR_SET_VMA_ANON_NAME)
+		chp = handle_chp_prctl_user_addrs((const char __user *)arg,
+						  start, len);
+#endif
 	down_write(&mm->mmap_sem);
 
 	switch (opt) {
 	case PR_SET_VMA_ANON_NAME:
+#ifdef CONFIG_CONT_PTE_HUGEPAGE
+		error = prctl_set_vma_anon_name(start, end, arg, chp);
+#else
 		error = prctl_set_vma_anon_name(start, end, arg);
+#endif
 		break;
 	default:
 		error = -EINVAL;

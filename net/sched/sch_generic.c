@@ -172,10 +172,9 @@ static inline void dev_requeue_skb(struct sk_buff *skb, struct Qdisc *q)
 static void try_bulk_dequeue_skb(struct Qdisc *q,
 				 struct sk_buff *skb,
 				 const struct netdev_queue *txq,
-				 int *packets, int budget)
+				 int *packets)
 {
 	int bytelimit = qdisc_avail_bulklimit(txq) - skb->len;
-	int cnt = 0;
 
 	while (bytelimit > 0) {
 		struct sk_buff *nskb = q->dequeue(q);
@@ -186,10 +185,8 @@ static void try_bulk_dequeue_skb(struct Qdisc *q,
 		bytelimit -= nskb->len; /* covers GSO len */
 		skb->next = nskb;
 		skb = nskb;
-		if (++cnt >= budget)
-			break;
+		(*packets)++; /* GSO counts as one pkt */
 	}
-	(*packets) += cnt;
 	skb_mark_not_on_list(skb);
 }
 
@@ -223,7 +220,7 @@ static void try_bulk_dequeue_skb_slow(struct Qdisc *q,
  * A requeued skb (via q->gso_skb) can also be a SKB list.
  */
 static struct sk_buff *dequeue_skb(struct Qdisc *q, bool *validate,
-				   int *packets, int budget)
+				   int *packets)
 {
 	const struct netdev_queue *txq = q->dev_queue;
 	struct sk_buff *skb = NULL;
@@ -290,7 +287,7 @@ validate:
 	if (skb) {
 bulk:
 		if (qdisc_may_bulk(q))
-			try_bulk_dequeue_skb(q, skb, txq, packets, budget);
+			try_bulk_dequeue_skb(q, skb, txq, packets);
 		else
 			try_bulk_dequeue_skb_slow(q, skb, packets);
 	}
@@ -382,7 +379,7 @@ bool sch_direct_xmit(struct sk_buff *skb, struct Qdisc *q,
  *				>0 - queue is not empty.
  *
  */
-static inline bool qdisc_restart(struct Qdisc *q, int *packets, int budget)
+static inline bool qdisc_restart(struct Qdisc *q, int *packets)
 {
 	spinlock_t *root_lock = NULL;
 	struct netdev_queue *txq;
@@ -391,7 +388,7 @@ static inline bool qdisc_restart(struct Qdisc *q, int *packets, int budget)
 	bool validate;
 
 	/* Dequeue packet */
-	skb = dequeue_skb(q, &validate, packets, budget);
+	skb = dequeue_skb(q, &validate, packets);
 	if (unlikely(!skb))
 		return false;
 
@@ -409,9 +406,14 @@ void __qdisc_run(struct Qdisc *q)
 	int quota = READ_ONCE(dev_tx_weight);
 	int packets;
 
-	while (qdisc_restart(q, &packets, quota)) {
+	while (qdisc_restart(q, &packets)) {
+		/*
+		 * Ordered by possible occurrence: Postpone processing if
+		 * 1. we've exceeded packet quota
+		 * 2. another process needs the CPU;
+		 */
 		quota -= packets;
-		if (quota <= 0) {
+		if (quota <= 0 || need_resched()) {
 			__netif_schedule(q);
 			break;
 		}

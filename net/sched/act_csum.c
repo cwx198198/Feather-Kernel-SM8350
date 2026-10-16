@@ -577,7 +577,7 @@ static int tcf_csum_act(struct sk_buff *skb, const struct tc_action *a,
 	params = rcu_dereference_bh(p->params);
 
 	tcf_lastuse_update(&p->tcf_tm);
-	tcf_action_update_bstats(&p->common, skb);
+	bstats_cpu_update(this_cpu_ptr(p->common.cpu_bstats), skb);
 
 	action = READ_ONCE(p->tcf_action);
 	if (unlikely(action == TC_ACT_SHOT))
@@ -621,7 +621,7 @@ out:
 	return action;
 
 drop:
-	tcf_action_inc_drop_qstats(&p->common);
+	qstats_drop_inc(this_cpu_ptr(p->common.cpu_qstats));
 	action = TC_ACT_SHOT;
 	goto out;
 }

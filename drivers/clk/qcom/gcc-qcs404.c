@@ -117,8 +117,7 @@ static const struct parent_map gcc_parent_map_5[] = {
 
 static const char * const gcc_parent_names_5[] = {
 	"bi_tcxo",
-	"dsi0pll_byteclk_src",
-	"gpll0_out_aux",
+	"dsi0pllbyte",
 	"core_bi_pll_test_se",
 };
 
@@ -130,8 +129,7 @@ static const struct parent_map gcc_parent_map_6[] = {
 
 static const char * const gcc_parent_names_6[] = {
 	"bi_tcxo",
-	"dsi0_phy_pll_out_byteclk",
-	"gpll0_out_aux",
+	"dsi0pllbyte",
 	"core_bi_pll_test_se",
 };
 
@@ -211,8 +209,7 @@ static const struct parent_map gcc_parent_map_12[] = {
 
 static const char * const gcc_parent_names_12[] = {
 	"bi_tcxo",
-	"dsi0pll_pclk_src",
-	"gpll0_out_aux",
+	"dsi0pll",
 	"core_bi_pll_test_se",
 };
 
@@ -246,37 +243,12 @@ static const char * const gcc_parent_names_14[] = {
 
 static const struct parent_map gcc_parent_map_15[] = {
 	{ P_BI_TCXO, 0 },
-	{ P_GPLL0_OUT_AUX, 2 },
 	{ P_CORE_BI_PLL_TEST_SE, 7 },
 };
 
 static const char * const gcc_parent_names_15[] = {
 	"bi_tcxo",
-	"gpll0_out_aux",
 	"core_bi_pll_test_se",
-};
-
-static const struct parent_map gcc_parent_map_16[] = {
-	{ P_XO, 0 },
-	{ P_GPLL0_OUT_MAIN, 1 },
-	{ P_CORE_BI_PLL_TEST_SE, 7 },
-};
-
-static const char * const gcc_parent_names_16[] = {
-	"cxo",
-	"gpll0_out_main",
-	"core_bi_pll_test_se",
-};
-
-static struct clk_fixed_factor cxo = {
-	.mult = 1,
-	.div = 1,
-	.hw.init = &(struct clk_init_data){
-		.name = "cxo",
-		.parent_names = (const char *[]){ "xo-board" },
-		.num_parents = 1,
-		.ops = &clk_fixed_factor_ops,
-	},
 };
 
 static struct clk_alpha_pll gpll0_sleep_clk_src = {
@@ -345,7 +317,6 @@ static struct clk_alpha_pll gpll1_out_main = {
 /* 930MHz configuration */
 static const struct alpha_pll_config gpll3_config = {
 	.l = 48,
-	.alpha_hi = 0x70,
 	.alpha = 0x0,
 	.alpha_hi = 0x70,
 	.alpha_en_mask = BIT(24),
