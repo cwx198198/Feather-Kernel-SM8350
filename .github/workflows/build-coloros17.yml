@@ -12,7 +12,7 @@ name: Build 5.4.254 OPLUS (lahaina) - ColorOS 17 port
 on:
   push:
     branches:
-      - 'coloros17'
+      - 'feather'
   workflow_dispatch:
     inputs:
       root:
@@ -28,6 +28,7 @@ env:
   # Same clang the reference tree is built with (LTO + CFI known good)
   CLANG_URL: https://github.com/Rancemxn/android_kernel_oppo_sm7325/releases/download/BuildTool/linux-x86-refs_heads_llvm-r383902b-clang-r383902.tar.gz
   ROOT: ${{ inputs.root || 'resukisu' }}
+  RESUKISU_TAG: v4.1.0
 
 jobs:
   build:
@@ -90,8 +91,11 @@ jobs:
           export SUBARCH="arm64"
 
           if [ "$ROOT" = "resukisu" ]; then
+            # Pinned release, linked in directly (drivers/Makefile and
+            # drivers/Kconfig already carry the kernelsu entries)
             rm -rf KernelSU drivers/kernelsu
-            curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+            git clone --depth=1 --branch "$RESUKISU_TAG" https://github.com/ReSukiSU/ReSukiSU KernelSU
+            ln -s ../KernelSU/kernel drivers/kernelsu
           fi
 
           make O=out CC="clang" LLVM=1 Reno10-Docker_defconfig
