@@ -1,4 +1,4 @@
-name: Build 5.4.254 OPLUS (lahaina) - ColorOS 17 port
+name: Build Feather Kernel 5.4.254 (lahaina) - ColorOS 17
 
 # Kernel for porting ColorOS 17 onto OnePlus 9 / 9 Pro with the stock
 # OxygenOS 14 vendor.
@@ -32,7 +32,7 @@ env:
 
 jobs:
   build:
-    name: Compile 5.4.254 OPLUS (${{ inputs.root || 'resukisu' }})
+    name: Compile Feather Kernel 5.4.254 (${{ inputs.root || 'resukisu' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 150
 
@@ -138,7 +138,7 @@ jobs:
           # same_magic() skips up to the first space before comparing, and a
           # space in UTS_RELEASE makes every stock vendor module mismatch.
           sed -i 's/^EXTRAVERSION = .*/EXTRAVERSION =/' Makefile
-          SUFFIX="-qgki-coloros17-${BUILD_DATE}"
+          SUFFIX="-qgki-Feather-${BUILD_DATE}"
           printf '#!/bin/sh\necho "%s"\n' "$SUFFIX" > scripts/setlocalversion
           chmod +x scripts/setlocalversion
           ./scripts/config --file out/.config --set-str LOCALVERSION ""
@@ -160,26 +160,26 @@ jobs:
           rm -rf AnyKernel3/.git
           cp $KERNEL_DIR/out/arch/arm64/boot/Image AnyKernel3/Image
           cp $KERNEL_DIR/anykernel/anykernel.sh AnyKernel3/anykernel.sh
-          ZIP="$GITHUB_WORKSPACE/OPLUS-5.4.254-ColorOS17-lahaina-$ROOT-$BUILD_DATE.zip"
+          ZIP="$GITHUB_WORKSPACE/Feather-Kernel-5.4.254-COS17-$ROOT-$BUILD_DATE.zip"
           ( cd AnyKernel3 && zip -r9 "$ZIP" . -x ".git*" "README.md" "*placeholder" >/dev/null )
           unzip -l "$ZIP"
 
       - name: Collect Image and in-tree modules
         run: |
-          cp $KERNEL_DIR/out/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image-5.4.254-ColorOS17-$BUILD_DATE"
+          cp $KERNEL_DIR/out/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image-Feather-5.4.254-COS17-$BUILD_DATE"
           # Not flashed: the stock vendor modules are kept. Provided for the
           # port script in case a module has to be replaced.
           mkdir -p modules
           find $KERNEL_DIR/out -name '*.ko' -exec cp {} modules/ \;
-          tar -czf "$GITHUB_WORKSPACE/modules-5.4.254-ColorOS17-$BUILD_DATE.tar.gz" -C modules .
+          tar -czf "$GITHUB_WORKSPACE/modules-Feather-5.4.254-COS17-$BUILD_DATE.tar.gz" -C modules .
           ls -la $GITHUB_WORKSPACE/*.zip $GITHUB_WORKSPACE/Image-* $GITHUB_WORKSPACE/modules-*
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: OPLUS-5.4.254-ColorOS17-lahaina-${{ env.ROOT }}
+          name: Feather-Kernel-5.4.254-COS17-${{ env.ROOT }}
           path: |
-            OPLUS-5.4.254-ColorOS17-lahaina-*.zip
-            Image-5.4.254-ColorOS17-*
-            modules-5.4.254-ColorOS17-*.tar.gz
+            Feather-Kernel-5.4.254-COS17-*.zip
+            Image-Feather-5.4.254-COS17-*
+            modules-Feather-5.4.254-COS17-*.tar.gz
           if-no-files-found: error

@@ -3,7 +3,7 @@
 
 ### AnyKernel setup
 properties() { '
-kernel.string=5.4.254 OPLUS | ColorOS 17 port kernel | @ozyern
+kernel.string=Feather Kernel 5.4.254 | ColorOS 17 | @ozyern
 do.devicecheck=1
 do.modules=0
 do.systemless=1
@@ -36,13 +36,13 @@ PATCH_VBMETA_FLAG=auto;
 . tools/ak3-core.sh;
 
 ui_print " ";
-ui_print "Installing 5.4.254 OPLUS kernel to boot...";
+ui_print "Installing Feather Kernel to boot...";
 dump_boot;
 write_boot;
 
 ui_print " ";
 ui_print "-----------------------------------------";
-ui_print "  5.4.254 OPLUS (ColorOS 17 port)";
+ui_print "  Feather Kernel 5.4.254 (ColorOS 17)";
 ui_print "  close_range | CAP_CHECKPOINT_RESTORE";
 ui_print "  BPF 5.10 + netbpfload compat";
 ui_print "  kernel -> boot (stock dtb/dtbo kept)";
