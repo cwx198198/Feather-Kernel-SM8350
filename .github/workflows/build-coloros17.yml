@@ -8,6 +8,8 @@ name: Build Feather Kernel 5.4.254 (lahaina) - ColorOS 17
 #   - Docker / Droidspaces patches (overlayfs util.c, module.c, sched/user.h,
 #     SYSVIPC kabi) are already in-tree, so nothing is downloaded over them
 #   - Only the kernel Image is flashed; the stock dtb/dtbo match this source
+#   - Bootloop fix (fix1): clang 12.0.5 like the v1.4 kernel that boots,
+#     no baseband_guard / REKERNEL, no KSU input hook, CFI_PERMISSIVE for now
 
 on:
   push:
@@ -25,10 +27,12 @@ on:
 
 env:
   KERNEL_DIR: kernel/msm-5.4
-  # Same clang the reference tree is built with (LTO + CFI known good)
-  CLANG_URL: https://github.com/Rancemxn/android_kernel_oppo_sm7325/releases/download/BuildTool/linux-x86-refs_heads_llvm-r383902b-clang-r383902.tar.gz
+  # clang 12.0.5, the compiler the v1.4 kernel that boots on OP9 was built with.
+  # clang 11 (r383902) builds of this tree die in early boot.
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
   ROOT: ${{ inputs.root || 'resukisu' }}
-  RESUKISU_TAG: v4.1.0
+  # v4.1.0 is old SukiSU code without manual hooks; rc3 matches the in-tree hooks
+  RESUKISU_TAG: v4.2.0-rc3
 
 jobs:
   build:
@@ -46,7 +50,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bc bison build-essential cpio curl dwarves flex git kmod libelf-dev \
-            libssl-dev lz4 python3 python-is-python3 rsync unzip zip
+            libssl-dev lz4 python3 python-is-python3 rsync unzip zip \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
           mkdir -p kernel
 
       - name: Checkout Kernel Source
@@ -54,6 +59,21 @@ jobs:
         with:
           path: kernel/msm-5.4
           fetch-depth: 1
+
+      # The tree symlinks into ../../vendor (oplus drivers, headers). It is
+      # written against the Reno10 vendor repo: the official OnePlusOSS OP9
+      # repo renamed oppo_project.h / oppo_process.h and does not build.
+      - name: Checkout Vendor Tree
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            --branch oppo/sm7325_v_15.0.0_reno10 \
+            https://github.com/one899/android_kernel_modules_and_devicetree_oppo_sm7325 vendor_src
+          git -C vendor_src sparse-checkout set vendor device
+          mv vendor_src/vendor vendor_src/device .
+          rm -rf vendor_src
+          dangling=$(cd $KERNEL_DIR && find . -xtype l -not -path './.git/*' -not -path './Documentation/*' -not -path './drivers/kernelsu' | wc -l)
+          echo "dangling symlinks: $dangling"
+          [ "$dangling" -eq 0 ]
 
       - name: Prepare Compiler
         run: |
@@ -84,8 +104,17 @@ jobs:
         working-directory: kernel/msm-5.4
         run: |
           export PATH="$GITHUB_WORKSPACE/compiler/clang-bin/bin:$PATH"
-          export CROSS_COMPILE="aarch64-linux-android-"
-          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export CROSS_COMPILE="aarch64-linux-gnu-"
+          export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+          # The compat vDSO Makefile hands clang --prefix=<dir of elfedit>; with
+          # /usr/bin that picks the host x86 as. Give it a dir of ARM tools only.
+          mkdir -p $GITHUB_WORKSPACE/compat-bin
+          for t in as ld elfedit objcopy objdump nm strip ar readelf; do
+            ln -sf /usr/bin/arm-linux-gnueabi-$t $GITHUB_WORKSPACE/compat-bin/arm-linux-gnueabi-$t
+          done
+          ln -sf /usr/bin/arm-linux-gnueabi-as $GITHUB_WORKSPACE/compat-bin/as
+          ln -sf /usr/bin/arm-linux-gnueabi-ld $GITHUB_WORKSPACE/compat-bin/ld
+          export CROSS_COMPILE_COMPAT="$GITHUB_WORKSPACE/compat-bin/arm-linux-gnueabi-"
           export CLANG_TRIPLE="aarch64-linux-gnu-"
           export ARCH="arm64"
           export SUBARCH="arm64"
@@ -104,7 +133,8 @@ jobs:
             ./scripts/config --file out/.config \
               -e CONFIG_KSU \
               -d CONFIG_KSU_TRACEPOINT_HOOK \
-              -e CONFIG_KSU_MANUAL_HOOK
+              -e CONFIG_KSU_MANUAL_HOOK \
+              -d CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK
           else
             ./scripts/config --file out/.config -d CONFIG_KSU
           fi
@@ -144,12 +174,23 @@ jobs:
           ./scripts/config --file out/.config --set-str LOCALVERSION ""
           ./scripts/config --file out/.config -d LOCALVERSION_AUTO
 
+          # Bootloop fix: match the v1.4 kernel that boots on OP9. baseband_guard
+          # and REKERNEL are not in it; CFI only warns until the culprit (if any)
+          # is found in dmesg.
+          ./scripts/config --file out/.config \
+            -d CONFIG_BBG -d CONFIG_REKERNEL \
+            --set-str CONFIG_LSM "lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor" \
+            -e CONFIG_CFI_PERMISSIVE -e CONFIG_COMPAT_VDSO -e CONFIG_BUILD_ARM64_DT_OVERLAY
+
           make O=out CC="clang" LLVM=1 olddefconfig
 
           echo '=== Key config ==='
-          grep -E '^CONFIG_(USER_NS|PID_NS|IPC_NS|NET_NS|UTS_NS|CHECKPOINT_RESTORE|SYSVIPC|BPF_SYSCALL|BPF_JIT|CGROUP_BPF|MODVERSIONS|KSU)=' out/.config | sort
+          grep -E '^(# )?CONFIG_(USER_NS|PID_NS|IPC_NS|NET_NS|UTS_NS|CHECKPOINT_RESTORE|SYSVIPC|BPF_SYSCALL|BPF_JIT|CGROUP_BPF|MODVERSIONS|KSU|KSU_MANUAL_HOOK_AUTO_INPUT_HOOK|BBG|REKERNEL|LSM|CFI_PERMISSIVE|COMPAT_VDSO)[= ]' out/.config | sort
 
-          make O=out CC="clang" LLVM=1 -j$(nproc)
+          # clang 12 errors on old-style prototypes / VLAs in vendor driver code
+          make O=out CC="clang" LLVM=1 \
+            KCFLAGS="-Wno-strict-prototypes -Wno-vla-extension -Wno-compound-token-split-by-macro" \
+            -j$(nproc)
 
           echo "=== Kernel release: $(cat out/include/config/kernel.release) ==="
           ls -la out/arch/arm64/boot/Image
