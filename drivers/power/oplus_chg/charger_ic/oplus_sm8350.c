@@ -1,6 +1,3 @@
-#ifndef OPLUS_CHG_OP_DEF
-#define OPLUS_CHG_OP_DEF 1
-#endif
 #define pr_fmt(fmt) "OPLUS_CHG[PMIC]: %s[%d]: " fmt, __func__, __LINE__
 
 #include <linux/delay.h>
@@ -155,7 +152,7 @@ static void oplus_otg_init_status_func(struct work_struct *work)
 	oplus_otg_ap_enable(true);
 }
 
-static bool oplus_chg_is_wls_online(struct battery_chg_dev *dev)
+static bool oplus_sm8350_chg_is_wls_online(struct battery_chg_dev *dev)
 {
 	union oplus_chg_mod_propval pval;
 	int rc;
@@ -186,7 +183,7 @@ static bool oplus_chg_is_usb_online(struct battery_chg_dev *dev)
 
 	return !!pval.intval;
 }
-static bool oplus_chg_is_wls_present(struct battery_chg_dev *dev)
+static bool oplus_sm8350_chg_is_wls_present(struct battery_chg_dev *dev)
 {
 	union oplus_chg_mod_propval pval;
 	int rc;
@@ -1815,7 +1812,7 @@ static int smbchg_set_fastchg_current_raw(int current_ma)
 		return -1;
 	}
 	bcdev = chip->pmic_spmi.bcdev_chip;
-	if (oplus_chg_is_wls_present(bcdev) || oplus_chg_is_wls_online(bcdev)) {
+	if (oplus_sm8350_chg_is_wls_present(bcdev) || oplus_sm8350_chg_is_wls_online(bcdev)) {
 		pr_debug("wls present, exit\n");
 		return 0;
 	}
@@ -2279,7 +2276,7 @@ static int smbchg_charging_disable(void)
 		return -1;
 	}
 	bcdev = chip->pmic_spmi.bcdev_chip;
-	if (oplus_chg_is_wls_present(bcdev) || oplus_chg_is_wls_online(bcdev)) {
+	if (oplus_sm8350_chg_is_wls_present(bcdev) || oplus_sm8350_chg_is_wls_online(bcdev)) {
 		pr_debug("wls present, exit\n");
 		return 0;
 	}

@@ -1,7 +1,5 @@
 ################################################################################
 ## DTB general support
-DTB_DIR=vendor/qcom
-
 function clean_dtbs() {
 	rm -rf ${OUT_DIR}/arch/${ARCH}/boot/dts
 }
@@ -9,6 +7,7 @@ append_cmd POST_DEFCONFIG_CMDS 'clean_dtbs'
 
 FILES+="
 arch/${ARCH}/boot/dts/${DTB_DIR}/*.dtb*
+arch/${ARCH}/boot/dts/${DTB_DIR}/dtbo.img
 "
 
 ################################################################################

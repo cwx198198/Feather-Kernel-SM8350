@@ -1,6 +1,3 @@
-#ifndef OPLUS_CHG_OP_DEF
-#define OPLUS_CHG_OP_DEF 1
-#endif
 /* SPDX-License-Identifier: GPL-2.0-only  */
 /*
  * Copyright (C) 2018-2020 Oplus. All rights reserved.
@@ -428,4 +425,6 @@ int oplus_chg_asic_unregister(struct oplus_chg_asic *asic);
 int oplus_warp_convert_fast_chg_type(int fast_chg_type);
 #endif
 
+int oplus_get_warp_adapter_power(int id);
+int oplus_get_warp_adapter_type(int id);
 #endif /* _OPLUS_WARP_H */

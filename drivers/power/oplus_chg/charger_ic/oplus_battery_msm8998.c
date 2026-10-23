@@ -1,6 +1,3 @@
-#ifndef OPLUS_CHG_OP_DEF
-#define OPLUS_CHG_OP_DEF 1
-#endif
 /************************************************************************************
 ** File: 
 ** VENDOR_EDIT

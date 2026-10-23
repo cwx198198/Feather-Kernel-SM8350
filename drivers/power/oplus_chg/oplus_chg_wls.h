@@ -1,6 +1,3 @@
-#ifndef OPLUS_CHG_OP_DEF
-#define OPLUS_CHG_OP_DEF 1
-#endif
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2020-2020 Oplus. All rights reserved.
@@ -703,5 +700,6 @@ struct oplus_chg_wls {
 #ifdef OPLUS_CHG_DEBUG
 void oplus_chg_wls_set_config(struct oplus_chg_mod *wls_ocm, u8 *buf);
 #endif
+int oplus_chg_wls_get_max_wireless_power(struct oplus_chg_wls *wls_dev);
 
 #endif /* __OPLUS_CHG_WLS_H__ */

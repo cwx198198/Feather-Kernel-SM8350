@@ -637,7 +637,6 @@ long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 	(void)ksu_handle_setresuid(ruid, euid, suid);
 #endif
 
-
 	kruid = make_kuid(ns, ruid);
 	keuid = make_kuid(ns, euid);
 	ksuid = make_kuid(ns, suid);
@@ -1248,23 +1247,27 @@ static int override_release(char __user *release, size_t len)
 	return ret;
 }
 
+#define ANDROID_BPF_COMPAT_RELEASE "5.10.240"
+
+static bool android_bpf_compat_task(void)
+{
+	return !strcmp(current->comm, "bpfloader") ||
+	       !strcmp(current->comm, "netbpfload") ||
+	       !strcmp(current->comm, "netd") ||
+	       !strcmp(current->comm, "uprobestatsbpfl");
+}
+
 SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
 	struct new_utsname tmp;
 
 	down_read(&uts_sem);
 	memcpy(&tmp, utsname(), sizeof(tmp));
-	/*
-	 * Android 25Q4 and later make netbpfload reject kernels older than
-	 * 5.10 based solely on uname(2).  This 5.4 vendor kernel carries the
-	 * required 5.10 BPF backport, so expose the corresponding compatibility
-	 * level only to that loader.  Keep the real release visible everywhere
-	 * else: globally changing UTS_RELEASE would also change module vermagic
-	 * and userspace feature selection unrelated to BPF.
-	 */
-	if (!strcmp(current->comm, "netbpfload")) {
-		strscpy(tmp.release, "5.10.199-dsu-bpf-compat",
+	if (android_bpf_compat_task()) {
+		strscpy(tmp.release, ANDROID_BPF_COMPAT_RELEASE,
 			sizeof(tmp.release));
+		pr_debug("fake uname: %s release=%s\n",
+			 current->comm, tmp.release);
 	}
 	up_read(&uts_sem);
 	if (copy_to_user(name, &tmp, sizeof(tmp)))

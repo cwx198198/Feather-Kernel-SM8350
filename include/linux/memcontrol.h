@@ -1021,9 +1021,9 @@ static inline struct lruvec *mem_cgroup_page_lruvec(struct page *page,
 
 #if defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU
 static inline struct lruvec *mem_cgroup_chp_page_lruvec(struct page *page,
-		¦   struct pglist_data *pgdat)
+		struct pglist_data *pgdat)
 {
-	return ((struct chp_lruvec *)pgdat->deferred_split_queue.split_queue_len)->lruvec;
+	return &((struct chp_lruvec *)pgdat->deferred_split_queue.split_queue_len)->lruvec;
 }
 #endif
 

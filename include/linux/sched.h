@@ -518,17 +518,13 @@ struct sched_entity {
 	struct load_weight		load;
 	unsigned long			runnable_weight;
 	struct rb_node			run_node;
-	u64				deadline;
-	u64				min_deadline;
 	struct list_head		group_node;
 	unsigned int			on_rq;
 
 	u64				exec_start;
 	u64				sum_exec_runtime;
-	u64				prev_sum_exec_runtime;
 	u64				vruntime;
-	s64				vlag;
-	u64				slice;
+	u64				prev_sum_exec_runtime;
 
 	u64				nr_migrations;
 
@@ -1150,8 +1146,8 @@ struct task_struct {
 	struct nameidata		*nameidata;
 
 #ifdef CONFIG_SYSVIPC
-	// struct sysv_sem			sysvsem;
-	// struct sysv_shm			sysvshm;
+	struct sysv_sem			sysvsem;
+	struct sysv_shm			sysvshm;
 #endif
 #ifdef CONFIG_DETECT_HUNG_TASK
 	/* hung task detection */
@@ -1611,14 +1607,9 @@ struct task_struct {
 
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
-#ifdef CONFIG_SYSVIPC
-	ANDROID_KABI_USE(3, struct sysv_sem sysvsem);
-	_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(4); ANDROID_KABI_RESERVE(5), struct sysv_shm sysvshm);
-#else
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
 	ANDROID_KABI_RESERVE(5);
-#endif
 	ANDROID_KABI_RESERVE(6);
 	ANDROID_KABI_RESERVE(7);
 	ANDROID_KABI_RESERVE(8);

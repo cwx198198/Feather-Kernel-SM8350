@@ -42,8 +42,3 @@ zstd_decompress-y := \
 		decompress/zstd_ddict.o \
 		decompress/zstd_decompress.o \
 		decompress/zstd_decompress_block.o \
-
-# xxh64 is used by zstd but CONFIG_XXHASH may not be enabled.
-ifneq ($(CONFIG_XXHASH),y)
-zstd_compress-y += common/xxhash.o
-endif

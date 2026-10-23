@@ -46,10 +46,6 @@
 #define CAM_FLASH_PACKET_OPCODE_INIT                 0
 #define CAM_FLASH_PACKET_OPCODE_SET_OPS              1
 #define CAM_FLASH_PACKET_OPCODE_NON_REALTIME_SET_OPS 2
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-/*Add by MuMinghao @ Camera 2024/07/23 for torch*/
-#define MAX_TORCH_STRENGTH_LEVEL                     4
-#endif
 
 struct cam_flash_ctrl;
 
@@ -225,9 +221,6 @@ struct cam_flash_ctrl {
 	const char *                        flash_name;
 	/*Add by Fangyan @ Camera 2020/08/17 for flash current*/
 	uint32_t                            flash_current;
-	/*Add by MuMinghao @ Camera 2024/07/23 for torch*/
-	int32_t                             flash_level_num;
-	uint32_t                            flash_level_current[MAX_TORCH_STRENGTH_LEVEL];
 #endif
 };
 

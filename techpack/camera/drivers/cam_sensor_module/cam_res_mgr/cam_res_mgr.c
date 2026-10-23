@@ -379,7 +379,7 @@ static int cam_res_mgr_shared_pinctrl_select_state(
 		cam_res->pctrl_res[idx].pstatus = PINCTRL_STATUS_SUSPEND;
 	}
 
-	return rc;
+	return 0;
 }
 
 static int cam_res_mgr_add_device(struct device *dev,
@@ -577,9 +577,11 @@ static void cam_res_mgr_gpio_free(struct device *dev, uint gpio)
 	bool                   need_free = true;
 	int                    dev_num = 0;
 	struct cam_gpio_res   *gpio_res = NULL;
+	bool                   is_shared_gpio = false;
 	bool                   is_shared_pctrl_gpio = false;
 	int                    pctrl_idx = -1;
 
+	is_shared_gpio = cam_res_mgr_gpio_is_in_shared_gpio(gpio);
 	is_shared_pctrl_gpio =
 			cam_res_mgr_gpio_is_in_shared_pctrl_gpio(gpio);
 
@@ -632,12 +634,8 @@ static void cam_res_mgr_gpio_free(struct device *dev, uint gpio)
 			pctrl_idx =
 				cam_res_mgr_util_get_idx_from_shared_pctrl_gpio(
 					gpio);
-			if (pctrl_idx >= 0) {
-				cam_res_mgr_shared_pinctrl_select_state(
+			cam_res_mgr_shared_pinctrl_select_state(
 				pctrl_idx, false);
-			} else {
-				CAM_ERR(CAM_RES, "invalid pinctrl idx: %d", pctrl_idx);
-			}
 		}
 
 		CAM_DBG(CAM_RES, "freeing gpio: %u", gpio);
@@ -934,11 +932,7 @@ static void cam_res_mgr_component_unbind(struct device *dev,
 {
 	if (cam_res) {
 		cam_res_mgr_free_res();
-		if (IS_ERR_OR_NULL(cam_res->pinctrl)) {
-			CAM_ERR(CAM_RES, "Pinctrl not available");
-		} else {
-			devm_pinctrl_put(cam_res->pinctrl);
-		}
+		devm_pinctrl_put(cam_res->pinctrl);
 		cam_res->pinctrl = NULL;
 		cam_res->pstatus = PINCTRL_STATUS_PUT;
 		kfree(cam_res);

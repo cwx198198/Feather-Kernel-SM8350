@@ -77,19 +77,6 @@ static ssize_t flash_on_off(struct cam_flash_ctrl *flash_ctrl)
 			flash_data.led_current_ma[1] = 60;
 			cam_flash_on(flash_ctrl, &flash_data, 0);
 			break;
-
-#ifdef OPLUS_FEATURE_CAMERA_COMMON
-		case FLASH_ON_LEVEL1:
-		case FLASH_ON_LEVEL2:
-		case FLASH_ON_LEVEL3:
-		case FLASH_ON_LEVEL4:
-			cam_flash_off(flash_ctrl);
-			flash_data.led_current_ma[0] = flash_ctrl->flash_level_current[flash_mode - FLASH_ON_LEVEL1];
-			flash_data.led_current_ma[1] = flash_ctrl->flash_level_current[flash_mode - FLASH_ON_LEVEL1];
-			cam_flash_on(flash_ctrl, &flash_data, 0);
-			break;
-#endif
-
 		default:
 			break;
 	}

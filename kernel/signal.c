@@ -47,7 +47,6 @@
 #include <linux/cgroup.h>
 #include <linux/audit.h>
 #include <linux/oom.h>
-#include "../drivers/rekernel/rekernel.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -1316,13 +1315,7 @@ int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p
 #if defined(OPLUS_FEATURE_SCHED_ASSIST) && defined(CONFIG_OPLUS_FEATURE_SCHED_ASSIST)
 	oplus_boost_kill_signal(sig, current, p);
 #endif
-    if (start_rekernel_server() == 0) {
- 		if (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
-     			char binder_kmsg[PACKET_SIZE];
-			snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
-     			send_netlink_message(binder_kmsg, strlen(binder_kmsg));
- 		}
- 	}
+
 	if (lock_task_sighand(p, &flags)) {
 		ret = send_signal(sig, info, p, type);
 		unlock_task_sighand(p, &flags);

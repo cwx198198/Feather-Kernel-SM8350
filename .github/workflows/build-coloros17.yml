@@ -2,14 +2,12 @@ name: Build Feather Kernel 5.4.254 (lahaina) - ColorOS 17
 
 # Kernel for porting ColorOS 17 onto OnePlus 9 / 9 Pro with the stock
 # OxygenOS 14 vendor.
-#   - Source: OnePlus 5.4.254 (one899/Kernel_oneplus_8350_5.4.254bpf, 9p)
-#     carrying the 5.10 BPF backport and the netbpfload uname compat
-#   - Added here: close_range (syscall 436) and CAP_CHECKPOINT_RESTORE (40)
-#   - Docker / Droidspaces patches (overlayfs util.c, module.c, sched/user.h,
-#     SYSVIPC kabi) are already in-tree, so nothing is downloaded over them
-#   - Only the kernel Image is flashed; the stock dtb/dtbo match this source
-#   - Bootloop fix (fix1): clang 12.0.5 like the v1.4 kernel that boots,
-#     no baseband_guard / REKERNEL, no KSU input hook, CFI_PERMISSIVE for now
+#   - Source: OPPO's SM8350 5.4.254 (oppo-source/android_kernel_oppo_sm8350)
+#     with the OnePlus 9 / 9 Pro targets and toraidl's Android 17 BPF work
+#     (toraidl/android_kernel_oppo_sm8350, oneplus/sm8350v_15.0.0_oneplus9pro)
+#   - Added here: close_range (syscall 436), CAP_PERFMON / CAP_BPF /
+#     CAP_CHECKPOINT_RESTORE (38-40), ReSukiSU manual hooks
+#   - Only the kernel Image is flashed; the stock dtb/dtbo are kept
 
 on:
   push:
@@ -27,12 +25,14 @@ on:
 
 env:
   KERNEL_DIR: kernel/msm-5.4
-  # clang 12.0.5, the compiler the v1.4 kernel that boots on OP9 was built with.
-  # clang 11 (r383902) builds of this tree die in early boot.
+  # clang 12.0.5: what the tree's clang-12 build fixes target, and what the
+  # v1.4 kernel that boots on OP9 was built with
   CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
   ROOT: ${{ inputs.root || 'resukisu' }}
-  # v4.1.0 is old SukiSU code without manual hooks; rc3 matches the in-tree hooks
   RESUKISU_TAG: v4.2.0-rc3
+  # toraidl's vendor tree for the same OnePlus 9 Pro kernel branch
+  VENDOR_REPO: https://github.com/toraidl/android_kernel_modules_and_devicetree_oppo_sm8350
+  VENDOR_BRANCH: oplus/sm8350v_15.0.0_oneplus_9Pro
 
 jobs:
   build:
@@ -60,14 +60,11 @@ jobs:
           path: kernel/msm-5.4
           fetch-depth: 1
 
-      # The tree symlinks into ../../vendor (oplus drivers, headers). It is
-      # written against the Reno10 vendor repo: the official OnePlusOSS OP9
-      # repo renamed oppo_project.h / oppo_process.h and does not build.
+      # The tree symlinks into ../../vendor (oplus drivers and headers)
       - name: Checkout Vendor Tree
         run: |
           git clone --depth 1 --filter=blob:none --sparse \
-            --branch oppo/sm7325_v_15.0.0_reno10 \
-            https://github.com/one899/android_kernel_modules_and_devicetree_oppo_sm7325 vendor_src
+            --branch "$VENDOR_BRANCH" "$VENDOR_REPO" vendor_src
           git -C vendor_src sparse-checkout set vendor device
           mv vendor_src/vendor vendor_src/device .
           rm -rf vendor_src
@@ -93,8 +90,6 @@ jobs:
           check 'CAP_CHECKPOINT_RESTORE (40)'   "grep -q 'define CAP_LAST_CAP *CAP_CHECKPOINT_RESTORE' include/uapi/linux/capability.h"
           check 'SELinux cap2 checkpoint_restore' "grep -q '\"checkpoint_restore\"' security/selinux/include/classmap.h"
           check 'BPF ringbuf'                   "grep -q 'ringbuf.o' kernel/bpf/Makefile"
-          check 'netbpfload uname compat'       "grep -q '\"netbpfload\"' kernel/sys.c"
-          check 'oplus_chg charger fix'         "grep -q 'oplus_chg/' drivers/power/Makefile"
           exit $fail
 
       - name: Set Release Info
@@ -118,16 +113,24 @@ jobs:
           export CLANG_TRIPLE="aarch64-linux-gnu-"
           export ARCH="arm64"
           export SUBARCH="arm64"
+          export BRAND_SHOW_FLAG=oneplus
+          export TARGET_BUILD_VARIANT=user
 
-          if [ "$ROOT" = "resukisu" ]; then
-            # Pinned release, linked in directly (drivers/Makefile and
-            # drivers/Kconfig already carry the kernelsu entries)
-            rm -rf KernelSU drivers/kernelsu
-            git clone --depth=1 --branch "$RESUKISU_TAG" https://github.com/ReSukiSU/ReSukiSU KernelSU
-            ln -s ../KernelSU/kernel drivers/kernelsu
-          fi
+          # Always present: drivers/Kconfig sources drivers/kernelsu/Kconfig
+          # (5.4 kconfig has no osource). ROOT=none only turns CONFIG_KSU off.
+          rm -rf KernelSU drivers/kernelsu
+          git clone --depth=1 --branch "$RESUKISU_TAG" https://github.com/ReSukiSU/ReSukiSU KernelSU
+          ln -s ../KernelSU/kernel drivers/kernelsu
 
-          make O=out CC="clang" LLVM=1 Reno10-Docker_defconfig
+          # lahaina-qgki_defconfig, the way scripts/gki/generate_defconfig.sh
+          # blends it (gki_defconfig, GKI fragment as =y, QGKI, debugfs for
+          # user builds), but merged with clang so clang-only options survive
+          F=arch/arm64/configs/vendor
+          scripts/gki/fragment_allyesconfig.sh $F/lahaina_GKI.config $GITHUB_WORKSPACE/lahaina_ALLYES_GKI.config
+          mkdir -p out
+          scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/gki_defconfig \
+            $GITHUB_WORKSPACE/lahaina_ALLYES_GKI.config $F/lahaina_QGKI.config $F/debugfs.config
+          make O=out CC="clang" LLVM=1 olddefconfig
 
           if [ "$ROOT" = "resukisu" ]; then
             ./scripts/config --file out/.config \
@@ -139,34 +142,19 @@ jobs:
             ./scripts/config --file out/.config -d CONFIG_KSU
           fi
 
-          # Namespaces / cgroups ColorOS 17 and Droidspaces expect.
-          # Most are already on in the defconfig; set them explicitly so a
-          # defconfig change can't silently drop them.
+          # Namespaces / cgroups ColorOS 17 and Droidspaces expect
           ./scripts/config --file out/.config \
-            -e CONFIG_NAMESPACES \
-            -e CONFIG_USER_NS \
-            -e CONFIG_PID_NS \
-            -e CONFIG_IPC_NS \
-            -e CONFIG_NET_NS \
-            -e CONFIG_UTS_NS \
-            -e CONFIG_CHECKPOINT_RESTORE \
-            -e CONFIG_SYSVIPC \
-            -e CONFIG_POSIX_MQUEUE \
-            -e CONFIG_TMPFS_POSIX_ACL \
-            -e CONFIG_TMPFS_XATTR \
-            -e CONFIG_CGROUP_PIDS \
-            -e CONFIG_CGROUP_IO \
-            -e CONFIG_CPUSETS \
-            -e CONFIG_MEMCG \
-            -e CONFIG_DEVTMPFS \
-            -e CONFIG_DEVTMPFS_MOUNT \
-            -e CONFIG_OVERLAY_FS \
-            -e CONFIG_OVERLAY_FS_REDIRECT_DIR \
-            -e CONFIG_OVERLAY_FS_INDEX
+            -e CONFIG_NAMESPACES -e CONFIG_USER_NS -e CONFIG_PID_NS -e CONFIG_IPC_NS \
+            -e CONFIG_NET_NS -e CONFIG_UTS_NS -e CONFIG_SYSVIPC -e CONFIG_POSIX_MQUEUE \
+            -e CONFIG_TMPFS_POSIX_ACL -e CONFIG_TMPFS_XATTR -e CONFIG_CGROUP_PIDS \
+            -e CONFIG_CPUSETS -e CONFIG_MEMCG -e CONFIG_OVERLAY_FS \
+            -e CONFIG_IKCONFIG -e CONFIG_IKCONFIG_PROC
+          # CFI only warns while this tree is being brought up, so a bad
+          # indirect call shows in dmesg instead of a silent hard reset
+          ./scripts/config --file out/.config -e CONFIG_CFI_PERMISSIVE
 
           # Version string must not contain a space: with CONFIG_MODVERSIONS,
-          # same_magic() skips up to the first space before comparing, and a
-          # space in UTS_RELEASE makes every stock vendor module mismatch.
+          # same_magic() skips up to the first space before comparing.
           sed -i 's/^EXTRAVERSION = .*/EXTRAVERSION =/' Makefile
           SUFFIX="-qgki-Feather-${BUILD_DATE}"
           printf '#!/bin/sh\necho "%s"\n' "$SUFFIX" > scripts/setlocalversion
@@ -174,20 +162,11 @@ jobs:
           ./scripts/config --file out/.config --set-str LOCALVERSION ""
           ./scripts/config --file out/.config -d LOCALVERSION_AUTO
 
-          # Bootloop fix: match the v1.4 kernel that boots on OP9. baseband_guard
-          # and REKERNEL are not in it; CFI only warns until the culprit (if any)
-          # is found in dmesg.
-          ./scripts/config --file out/.config \
-            -d CONFIG_BBG -d CONFIG_REKERNEL \
-            --set-str CONFIG_LSM "lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor" \
-            -e CONFIG_CFI_PERMISSIVE -e CONFIG_COMPAT_VDSO -e CONFIG_BUILD_ARM64_DT_OVERLAY
-
           make O=out CC="clang" LLVM=1 olddefconfig
 
           echo '=== Key config ==='
-          grep -E '^(# )?CONFIG_(USER_NS|PID_NS|IPC_NS|NET_NS|UTS_NS|CHECKPOINT_RESTORE|SYSVIPC|BPF_SYSCALL|BPF_JIT|CGROUP_BPF|MODVERSIONS|KSU|KSU_MANUAL_HOOK_AUTO_INPUT_HOOK|BBG|REKERNEL|LSM|CFI_PERMISSIVE|COMPAT_VDSO)[= ]' out/.config | sort
+          grep -E '^(# )?CONFIG_(ARCH_LAHAINA|QGKI|USER_NS|PID_NS|BPF_SYSCALL|BPF_JIT|MODVERSIONS|KSU|KSU_MANUAL_HOOK|LTO_CLANG|CFI_CLANG|CFI_PERMISSIVE|LSM)[= ]' out/.config | sort
 
-          # clang 12 errors on old-style prototypes / VLAs in vendor driver code
           make O=out CC="clang" LLVM=1 \
             KCFLAGS="-Wno-strict-prototypes -Wno-vla-extension -Wno-compound-token-split-by-macro" \
             -j$(nproc)
@@ -201,26 +180,21 @@ jobs:
           rm -rf AnyKernel3/.git
           cp $KERNEL_DIR/out/arch/arm64/boot/Image AnyKernel3/Image
           cp $KERNEL_DIR/anykernel/anykernel.sh AnyKernel3/anykernel.sh
-          ZIP="$GITHUB_WORKSPACE/Feather-Kernel-5.4.254-COS17-$ROOT-$BUILD_DATE.zip"
+          ZIP="$GITHUB_WORKSPACE/Feather-Kernel-5.4.254-COS17-v2-$ROOT-$BUILD_DATE.zip"
           ( cd AnyKernel3 && zip -r9 "$ZIP" . -x ".git*" "README.md" "*placeholder" >/dev/null )
           unzip -l "$ZIP"
 
-      - name: Collect Image and in-tree modules
+      - name: Collect Image and config
         run: |
-          cp $KERNEL_DIR/out/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image-Feather-5.4.254-COS17-$BUILD_DATE"
-          # Not flashed: the stock vendor modules are kept. Provided for the
-          # port script in case a module has to be replaced.
-          mkdir -p modules
-          find $KERNEL_DIR/out -name '*.ko' -exec cp {} modules/ \;
-          tar -czf "$GITHUB_WORKSPACE/modules-Feather-5.4.254-COS17-$BUILD_DATE.tar.gz" -C modules .
-          ls -la $GITHUB_WORKSPACE/*.zip $GITHUB_WORKSPACE/Image-* $GITHUB_WORKSPACE/modules-*
+          cp $KERNEL_DIR/out/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image-Feather-5.4.254-COS17-v2-$ROOT-$BUILD_DATE"
+          cp $KERNEL_DIR/out/.config "$GITHUB_WORKSPACE/config-Feather-5.4.254-COS17-v2-$ROOT-$BUILD_DATE"
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Feather-Kernel-5.4.254-COS17-${{ env.ROOT }}
+          name: Feather-Kernel-5.4.254-COS17-v2-${{ env.ROOT }}
           path: |
-            Feather-Kernel-5.4.254-COS17-*.zip
-            Image-Feather-5.4.254-COS17-*
-            modules-Feather-5.4.254-COS17-*.tar.gz
+            Feather-Kernel-5.4.254-COS17-v2-*.zip
+            Image-Feather-5.4.254-COS17-v2-*
+            config-Feather-5.4.254-COS17-v2-*
           if-no-files-found: error

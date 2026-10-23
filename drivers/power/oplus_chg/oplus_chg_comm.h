@@ -1,6 +1,3 @@
-#ifndef OPLUS_CHG_OP_DEF
-#define OPLUS_CHG_OP_DEF 1
-#endif
 #ifndef __OPLUS_CHG_COMM_H__
 #define __OPLUS_CHG_COMM_H__
 
@@ -145,4 +142,10 @@ ssize_t oplus_chg_comm_response_mutual_cmd(
 int oplus_chg_common_set_mutual_cmd(
 			struct oplus_chg_mod *comm_ocm,
 			u32 cmd, u32 data_size, const void *data_buf);
+int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
+			enum oplus_chg_mod_property prop,
+			union oplus_chg_mod_propval *pval);
+int oplus_chg_comm_set_prop(struct oplus_chg_mod *ocm,
+			enum oplus_chg_mod_property prop,
+			const union oplus_chg_mod_propval *pval);
 #endif

@@ -1,6 +1,3 @@
-#ifndef OPLUS_CHG_OP_DEF
-#define OPLUS_CHG_OP_DEF 1
-#endif
 #define pr_fmt(fmt) "OPLUS_CHG[COMM]: %s[%d]: " fmt, __func__, __LINE__
 
 #include <linux/module.h>
@@ -26,7 +23,8 @@
 #include "oplus_gauge.h"
 #include "oplus_chg_cfg.h"
 #include "oplus_op_def.h"
-
+#include "oplus_warp.h"
+#include "oplus_wireless.h"
 static int camera_on_count;
 
 struct oplus_chg_comm {
@@ -876,6 +874,12 @@ static enum oplus_chg_mod_property oplus_chg_comm_props[] = {
 	OPLUS_CHG_PROP_SKIN_TEMP,
 	OPLUS_CHG_PROP_CALL_ON,
 	OPLUS_CHG_PROP_CAMERA_ON,
+	OPLUS_CHG_PROP_ADAPTER_POWER,
+	OPLUS_CHG_PROP_PROJECT_POWER,
+	OPLUS_CHG_PROP_DEVICE_POWER,
+	OPLUS_CHG_PROP_UI_POWER,
+	OPLUS_CHG_PROP_CPA_POWER,
+	OPLUS_CHG_PROP_PROTOCAL_TYPE,
 };
 
 static enum oplus_chg_mod_property oplus_chg_comm_uevent_props[] = {
@@ -891,13 +895,25 @@ static struct oplus_chg_exten_prop oplus_chg_comm_exten_props[] = {
 	OPLUS_CHG_EXTEN_RWATTR(OPLUS_CHG_EXTERN_PROP_MUTUAL_CMD, oplus_chg_comm_mutual_cmd),
 };
 
-static int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
+#define UI_POWER_SHOW_LIMIT 33000
+int protocol_type_by_user = 0;
+int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
 			enum oplus_chg_mod_property prop,
 			union oplus_chg_mod_propval *pval)
 {
 	struct oplus_chg_comm *comm_dev = oplus_chg_mod_get_drvdata(ocm);
 	struct oplus_chg_chip *chip = oplus_chg_get_chg_struct();
 	int rc = 0;
+	int adapter_power = 0;
+	int project_power = 0;
+	int ui_power = 0;
+	int cpa_power = 0;
+	int fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
+	static int last_fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
+	int subtype = CHARGER_SUBTYPE_DEFAULT;
+	bool wls_online = false;
+	bool vooc_online = false;
+	static int pre_fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
 
 	if (!chip) {
 		// pr_err("oplus chip is NULL\n");
@@ -917,6 +933,118 @@ static int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
 	case OPLUS_CHG_PROP_CAMERA_ON:
 		pval->intval = camera_on_count;
 		break;
+	case OPLUS_CHG_PROP_ADAPTER_POWER:
+		pval->intval = oplus_get_adapter_power();
+		break;
+	case OPLUS_CHG_PROP_PROJECT_POWER:
+		pval->intval = oplus_get_project_power();
+		break;
+    case OPLUS_CHG_PROP_DEVICE_POWER:
+		pval->intval = oplus_get_project_power();
+		break;
+	case OPLUS_CHG_PROP_UI_POWER:
+		adapter_power = oplus_get_adapter_power();
+		project_power = oplus_get_project_power();
+		pval->intval = min(adapter_power, project_power);
+		ui_power = pval->intval;
+		if (ui_power < UI_POWER_SHOW_LIMIT || ui_power < project_power)
+			pval->intval = 0;
+		break;
+	case OPLUS_CHG_PROP_CPA_POWER:
+		adapter_power = oplus_get_adapter_power();
+		project_power = oplus_get_project_power();
+		pval->intval = min(adapter_power, project_power);
+		cpa_power = pval->intval;
+		if (cpa_power < 0)
+			pval->intval = 0;
+		break;
+	case OPLUS_CHG_PROP_PROTOCAL_TYPE:
+		chg_err("[PROTOCAL_TYPE] Enter\n");
+
+		if ((oplus_warp_get_fastchg_started() == true) ||
+			(oplus_warp_get_fastchg_to_normal() == true) ||
+			(oplus_warp_get_fastchg_to_warm() == true) ||
+			(oplus_warp_get_fastchg_dummy_started() == true)) {
+			vooc_online = true;
+			chg_err("[PROTOCAL_TYPE] VOOC online detected\n");
+		} else {
+			chg_err("[PROTOCAL_TYPE] VOOC not online\n");
+		}
+
+		subtype = oplus_warp_get_fast_chg_type();
+		chg_err("[PROTOCAL_TYPE] Detected fastchg subtype: %d\n", subtype);
+
+		if (vooc_online && subtype > 0 ) {
+			int adapter_type = oplus_get_warp_adapter_type(subtype);
+			chg_err("[PROTOCAL_TYPE] Adapter type: %d\n", adapter_type);
+
+			if (adapter_type == CHARGER_TYPE_SWARP) {
+				fast_chg_type = CHARGER_SUBTYPE_FASTCHG_SWARP;
+				chg_err("[PROTOCAL_TYPE] SWARP charger detected\n");
+			} else {
+				fast_chg_type = CHARGER_SUBTYPE_FASTCHG_WARP;
+				chg_err("[PROTOCAL_TYPE] WARP charger detected\n");
+			}
+
+			pre_fast_chg_type = fast_chg_type;
+			chg_err("[PROTOCAL_TYPE] pre_fast_chg_type set to: %d\n", pre_fast_chg_type);
+		} else {
+			fast_chg_type = subtype;
+			chg_err("[PROTOCAL_TYPE] Fallback fastchg type: %d\n", fast_chg_type);
+
+			if (subtype == CHARGER_SUBTYPE_PD) {
+				chg_err("[PROTOCAL_TYPE] Detected PD subtype\n");
+				if (!chip->pd_swarp) {
+					fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
+					chg_err("[PROTOCAL_TYPE] PD SWARP not supported, set default\n");
+				}
+			}
+		}
+
+		chg_err("[PROTOCAL_TYPE] Intermediate fast_chg_type: %d\n", fast_chg_type);
+		wls_online = oplus_wpc_get_online_status() ||
+			oplus_chg_is_wls_online(chip) ||
+			oplus_chg_is_wls_present(chip);
+		chg_err("[PROTOCAL_TYPE] Wireless online status: %d\n", wls_online);
+
+		if (wls_online) {
+			if (is_wls_ocm_available(comm_dev)) {
+				chg_err("[PROTOCAL_TYPE] Wireless OCM available\n");
+				rc = oplus_chg_mod_get_property(comm_dev->wls_ocm,
+								OPLUS_CHG_PROP_WLS_TYPE, pval);
+				if (rc < 0) {
+					chg_err("[PROTOCAL_TYPE] Get wireless type failed, default fallback\n");
+					fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
+				} else {
+					chg_err("[PROTOCAL_TYPE] Wireless type intval: %d\n", pval->intval);
+					if (pval->intval == OPLUS_CHG_WLS_WARP) {
+						fast_chg_type = CHARGER_SUBTYPE_FASTCHG_WARP;
+						chg_err("[PROTOCAL_TYPE] Wireless WARP detected\n");
+					} else if (pval->intval == OPLUS_CHG_WLS_SWARP || pval->intval == OPLUS_CHG_WLS_PD_65W) {
+						fast_chg_type = CHARGER_SUBTYPE_FASTCHG_SWARP;
+						chg_err("[PROTOCAL_TYPE] Wireless SWARP or PD 65W detected\n");
+					} else {
+						fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
+						chg_err("[PROTOCAL_TYPE] Wireless type unknown, fallback to default\n");
+					}
+				}
+			} else {
+				chg_err("[PROTOCAL_TYPE] Wireless OCM not available\n");
+				fast_chg_type = CHARGER_SUBTYPE_DEFAULT;
+			}
+		}
+		if (protocol_type_by_user > 0) {
+			chg_err("[PROTOCAL_TYPE] Override by user-defined protocol type: %d\n", protocol_type_by_user);
+			fast_chg_type = protocol_type_by_user;
+		}
+
+		last_fast_chg_type = fast_chg_type;
+		chg_err("[PROTOCAL_TYPE] Final fast_chg_type: %d\n", fast_chg_type);
+
+		pval->intval = fast_chg_type;
+		chg_err("[PROTOCAL_TYPE] Output intval set: %d\n", pval->intval);
+
+	    break;
 	default:
 		pr_err("get prop %d is not supported\n", prop);
 		return -EINVAL;
@@ -928,7 +1056,7 @@ static int oplus_chg_comm_get_prop(struct oplus_chg_mod *ocm,
 	return 0;
 }
 
-static int oplus_chg_comm_set_prop(struct oplus_chg_mod *ocm,
+int oplus_chg_comm_set_prop(struct oplus_chg_mod *ocm,
 			enum oplus_chg_mod_property prop,
 			const union oplus_chg_mod_propval *pval)
 {

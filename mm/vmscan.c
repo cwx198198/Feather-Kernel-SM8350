@@ -53,7 +53,6 @@
 #include <linux/psi.h>
 #ifdef CONFIG_CONT_PTE_HUGEPAGE
 #include <linux/swapfile.h>
-//#include "sched.h"
 #endif
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -4839,7 +4838,6 @@ static int kswapd(void *p)
 #else
 	const struct cpumask *cpumask = cpumask_of_node(pgdat->node_id);
 #endif
-	set_user_nice(tsk, -10);
 
 	if (!cpumask_empty(cpumask))
 		set_cpus_allowed_ptr(tsk, cpumask);

@@ -47,7 +47,7 @@
 Module.symvers
 modules.builtin
 modules.order
-! .github/
+
 #
 # Top-level generic files
 #

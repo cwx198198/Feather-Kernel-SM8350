@@ -706,6 +706,20 @@ tracing_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_ktime_get_ns_proto;
 	case BPF_FUNC_ktime_get_boot_ns:
 		return &bpf_ktime_get_boot_ns_proto;
+	case BPF_FUNC_ringbuf_output:
+		return &bpf_ringbuf_output_proto;
+	case BPF_FUNC_ringbuf_reserve:
+	case BPF_FUNC_ringbuf_reserve_5_10:
+		return &bpf_ringbuf_reserve_proto;
+	case BPF_FUNC_ringbuf_submit:
+	case BPF_FUNC_ringbuf_submit_5_10:
+		return &bpf_ringbuf_submit_proto;
+	case BPF_FUNC_ringbuf_discard:
+	case BPF_FUNC_ringbuf_discard_5_10:
+		return &bpf_ringbuf_discard_proto;
+	case BPF_FUNC_ringbuf_query:
+	case BPF_FUNC_ringbuf_query_5_10:
+		return &bpf_ringbuf_query_proto;
 	case BPF_FUNC_tail_call:
 		return &bpf_tail_call_proto;
 	case BPF_FUNC_get_current_pid_tgid:
@@ -1077,7 +1091,9 @@ static bool raw_tp_prog_is_valid_access(int off, int size,
 		return false;
 	if (off % size != 0)
 		return false;
-	return true;
+	if (!prog->aux->attach_btf_id)
+		return true;
+	return btf_ctx_access(off, size, type, prog, info);
 }
 
 const struct bpf_verifier_ops raw_tracepoint_verifier_ops = {
@@ -1086,27 +1102,6 @@ const struct bpf_verifier_ops raw_tracepoint_verifier_ops = {
 };
 
 const struct bpf_prog_ops raw_tracepoint_prog_ops = {
-};
-
-static bool tracing_prog_is_valid_access(int off, int size,
-					 enum bpf_access_type type,
-					 const struct bpf_prog *prog,
-					 struct bpf_insn_access_aux *info)
-{
-	if (off < 0 || off >= sizeof(__u64) * MAX_BPF_FUNC_ARGS)
-		return false;
-	if (type != BPF_READ || off % size != 0)
-		return false;
-
-	return btf_ctx_access(off, size, type, prog, info);
-}
-
-const struct bpf_verifier_ops tracing_verifier_ops = {
-	.get_func_proto	 = raw_tp_prog_func_proto,
-	.is_valid_access = tracing_prog_is_valid_access,
-};
-
-const struct bpf_prog_ops tracing_prog_ops = {
 };
 
 static bool raw_tp_writable_prog_is_valid_access(int off, int size,
