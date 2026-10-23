@@ -1,0 +1,200 @@
+name: Build Feather Kernel 5.4.254 (lahaina) - ColorOS 17
+
+# Kernel for porting ColorOS 17 onto OnePlus 9 / 9 Pro with the stock
+# OxygenOS 14 vendor.
+#   - Source: OPPO's SM8350 5.4.254 (oppo-source/android_kernel_oppo_sm8350)
+#     with the OnePlus 9 / 9 Pro targets and toraidl's Android 17 BPF work
+#     (toraidl/android_kernel_oppo_sm8350, oneplus/sm8350v_15.0.0_oneplus9pro)
+#   - Added here: close_range (syscall 436), CAP_PERFMON / CAP_BPF /
+#     CAP_CHECKPOINT_RESTORE (38-40), ReSukiSU manual hooks
+#   - Only the kernel Image is flashed; the stock dtb/dtbo are kept
+
+on:
+  push:
+    branches:
+      - 'feather'
+  workflow_dispatch:
+    inputs:
+      root:
+        description: 'Root solution'
+        type: choice
+        options:
+          - resukisu
+          - none
+        default: resukisu
+
+env:
+  KERNEL_DIR: kernel/msm-5.4
+  # clang 12.0.5: what the tree's clang-12 build fixes target, and what the
+  # v1.4 kernel that boots on OP9 was built with
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
+  ROOT: ${{ inputs.root || 'resukisu' }}
+  RESUKISU_TAG: v4.2.0-rc3
+  # toraidl's vendor tree for the same OnePlus 9 Pro kernel branch
+  VENDOR_REPO: https://github.com/toraidl/android_kernel_modules_and_devicetree_oppo_sm8350
+  VENDOR_BRANCH: oplus/sm8350v_15.0.0_oneplus_9Pro
+
+jobs:
+  build:
+    name: Compile Feather Kernel 5.4.254 (${{ inputs.root || 'resukisu' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - name: Configure Fast APT Mirror
+        uses: vegardit/fast-apt-mirror.sh@v1
+
+      - name: Make Build Environment
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential cpio curl dwarves flex git kmod libelf-dev \
+            libssl-dev lz4 python3 python-is-python3 rsync unzip zip \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+          mkdir -p kernel
+
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v5
+        with:
+          path: kernel/msm-5.4
+          fetch-depth: 1
+
+      # The tree symlinks into ../../vendor (oplus drivers and headers)
+      - name: Checkout Vendor Tree
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            --branch "$VENDOR_BRANCH" "$VENDOR_REPO" vendor_src
+          git -C vendor_src sparse-checkout set vendor device
+          mv vendor_src/vendor vendor_src/device .
+          rm -rf vendor_src
+          dangling=$(cd $KERNEL_DIR && find . -xtype l -not -path './.git/*' -not -path './Documentation/*' -not -path './drivers/kernelsu' | wc -l)
+          echo "dangling symlinks: $dangling"
+          [ "$dangling" -eq 0 ]
+
+      - name: Prepare Compiler
+        run: |
+          mkdir -p compiler/clang-bin
+          curl -fL "$CLANG_URL" -o clang.tar.gz --connect-timeout 30 --retry 5 --retry-delay 5
+          tar -xzf clang.tar.gz -C compiler/clang-bin
+          rm clang.tar.gz
+          compiler/clang-bin/bin/clang --version | head -1
+
+      - name: Verify ColorOS 17 kernel requirements
+        working-directory: kernel/msm-5.4
+        run: |
+          fail=0
+          check() { if eval "$2"; then echo "  OK:   $1"; else echo "  FAIL: $1"; fail=1; fi; }
+          check 'close_range syscall 436'       "grep -q '__NR_close_range 436' include/uapi/asm-generic/unistd.h"
+          check 'close_range compat (arm32)'    "grep -q '__NR_close_range 436' arch/arm64/include/asm/unistd32.h"
+          check 'CAP_CHECKPOINT_RESTORE (40)'   "grep -q 'define CAP_LAST_CAP *CAP_CHECKPOINT_RESTORE' include/uapi/linux/capability.h"
+          check 'SELinux cap2 checkpoint_restore' "grep -q '\"checkpoint_restore\"' security/selinux/include/classmap.h"
+          check 'BPF ringbuf'                   "grep -q 'ringbuf.o' kernel/bpf/Makefile"
+          exit $fail
+
+      - name: Set Release Info
+        run: echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+
+      - name: Compile Kernel
+        working-directory: kernel/msm-5.4
+        run: |
+          export PATH="$GITHUB_WORKSPACE/compiler/clang-bin/bin:$PATH"
+          export CROSS_COMPILE="aarch64-linux-gnu-"
+          export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+          # The compat vDSO Makefile hands clang --prefix=<dir of elfedit>; with
+          # /usr/bin that picks the host x86 as. Give it a dir of ARM tools only.
+          mkdir -p $GITHUB_WORKSPACE/compat-bin
+          for t in as ld elfedit objcopy objdump nm strip ar readelf; do
+            ln -sf /usr/bin/arm-linux-gnueabi-$t $GITHUB_WORKSPACE/compat-bin/arm-linux-gnueabi-$t
+          done
+          ln -sf /usr/bin/arm-linux-gnueabi-as $GITHUB_WORKSPACE/compat-bin/as
+          ln -sf /usr/bin/arm-linux-gnueabi-ld $GITHUB_WORKSPACE/compat-bin/ld
+          export CROSS_COMPILE_COMPAT="$GITHUB_WORKSPACE/compat-bin/arm-linux-gnueabi-"
+          export CLANG_TRIPLE="aarch64-linux-gnu-"
+          export ARCH="arm64"
+          export SUBARCH="arm64"
+          export BRAND_SHOW_FLAG=oneplus
+          export TARGET_BUILD_VARIANT=user
+
+          # Always present: drivers/Kconfig sources drivers/kernelsu/Kconfig
+          # (5.4 kconfig has no osource). ROOT=none only turns CONFIG_KSU off.
+          rm -rf KernelSU drivers/kernelsu
+          git clone --depth=1 --branch "$RESUKISU_TAG" https://github.com/ReSukiSU/ReSukiSU KernelSU
+          ln -s ../KernelSU/kernel drivers/kernelsu
+
+          # lahaina-qgki_defconfig, the way scripts/gki/generate_defconfig.sh
+          # blends it (gki_defconfig, GKI fragment as =y, QGKI, debugfs for
+          # user builds), but merged with clang so clang-only options survive
+          F=arch/arm64/configs/vendor
+          scripts/gki/fragment_allyesconfig.sh $F/lahaina_GKI.config $GITHUB_WORKSPACE/lahaina_ALLYES_GKI.config
+          mkdir -p out
+          scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/gki_defconfig \
+            $GITHUB_WORKSPACE/lahaina_ALLYES_GKI.config $F/lahaina_QGKI.config $F/debugfs.config
+          make O=out CC="clang" LLVM=1 olddefconfig
+
+          if [ "$ROOT" = "resukisu" ]; then
+            ./scripts/config --file out/.config \
+              -e CONFIG_KSU \
+              -d CONFIG_KSU_TRACEPOINT_HOOK \
+              -e CONFIG_KSU_MANUAL_HOOK \
+              -d CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK
+          else
+            ./scripts/config --file out/.config -d CONFIG_KSU
+          fi
+
+          # Namespaces / cgroups ColorOS 17 and Droidspaces expect
+          ./scripts/config --file out/.config \
+            -e CONFIG_NAMESPACES -e CONFIG_USER_NS -e CONFIG_PID_NS -e CONFIG_IPC_NS \
+            -e CONFIG_NET_NS -e CONFIG_UTS_NS -e CONFIG_SYSVIPC -e CONFIG_POSIX_MQUEUE \
+            -e CONFIG_TMPFS_POSIX_ACL -e CONFIG_TMPFS_XATTR -e CONFIG_CGROUP_PIDS \
+            -e CONFIG_CPUSETS -e CONFIG_MEMCG -e CONFIG_OVERLAY_FS \
+            -e CONFIG_IKCONFIG -e CONFIG_IKCONFIG_PROC
+          # CFI only warns while this tree is being brought up, so a bad
+          # indirect call shows in dmesg instead of a silent hard reset
+          ./scripts/config --file out/.config -e CONFIG_CFI_PERMISSIVE
+
+          # Version string must not contain a space: with CONFIG_MODVERSIONS,
+          # same_magic() skips up to the first space before comparing.
+          sed -i 's/^EXTRAVERSION = .*/EXTRAVERSION =/' Makefile
+          SUFFIX="-qgki-Feather-${BUILD_DATE}"
+          printf '#!/bin/sh\necho "%s"\n' "$SUFFIX" > scripts/setlocalversion
+          chmod +x scripts/setlocalversion
+          ./scripts/config --file out/.config --set-str LOCALVERSION ""
+          ./scripts/config --file out/.config -d LOCALVERSION_AUTO
+
+          make O=out CC="clang" LLVM=1 olddefconfig
+
+          echo '=== Key config ==='
+          grep -E '^(# )?CONFIG_(ARCH_LAHAINA|QGKI|USER_NS|PID_NS|BPF_SYSCALL|BPF_JIT|MODVERSIONS|KSU|KSU_MANUAL_HOOK|LTO_CLANG|CFI_CLANG|CFI_PERMISSIVE|LSM)[= ]' out/.config | sort
+
+          make O=out CC="clang" LLVM=1 \
+            KCFLAGS="-Wno-strict-prototypes -Wno-vla-extension -Wno-compound-token-split-by-macro" \
+            -j$(nproc)
+
+          echo "=== Kernel release: $(cat out/include/config/kernel.release) ==="
+          ls -la out/arch/arm64/boot/Image
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          rm -rf AnyKernel3/.git
+          cp $KERNEL_DIR/out/arch/arm64/boot/Image AnyKernel3/Image
+          cp $KERNEL_DIR/anykernel/anykernel.sh AnyKernel3/anykernel.sh
+          ZIP="$GITHUB_WORKSPACE/Feather-Kernel-5.4.254-COS17-v2-$ROOT-$BUILD_DATE.zip"
+          ( cd AnyKernel3 && zip -r9 "$ZIP" . -x ".git*" "README.md" "*placeholder" >/dev/null )
+          unzip -l "$ZIP"
+
+      - name: Collect Image and config
+        run: |
+          cp $KERNEL_DIR/out/arch/arm64/boot/Image "$GITHUB_WORKSPACE/Image-Feather-5.4.254-COS17-v2-$ROOT-$BUILD_DATE"
+          cp $KERNEL_DIR/out/.config "$GITHUB_WORKSPACE/config-Feather-5.4.254-COS17-v2-$ROOT-$BUILD_DATE"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Feather-Kernel-5.4.254-COS17-v2-${{ env.ROOT }}
+          path: |
+            Feather-Kernel-5.4.254-COS17-v2-*.zip
+            Image-Feather-5.4.254-COS17-v2-*
+            config-Feather-5.4.254-COS17-v2-*
+          if-no-files-found: error
