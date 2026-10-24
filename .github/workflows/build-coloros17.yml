@@ -158,6 +158,9 @@ jobs:
           # CFI only warns while this tree is being brought up, so a bad
           # indirect call shows in dmesg instead of a silent hard reset
           ./scripts/config --file out/.config -e CONFIG_CFI_PERMISSIVE
+          # As in v1.4. With CHG_FOR_OP9_PRO the dts build goes to oplus/lemonadev,
+          # which only has the overlay (dtbo) sources.
+          ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
 
           # Version string must not contain a space: with CONFIG_MODVERSIONS,
           # same_magic() skips up to the first space before comparing.
@@ -173,9 +176,11 @@ jobs:
           echo '=== Key config ==='
           grep -E '^(# )?CONFIG_(ARCH_LAHAINA|QGKI|USER_NS|PID_NS|BPF_SYSCALL|BPF_JIT|MODVERSIONS|KSU|KSU_MANUAL_HOOK|LTO_CLANG|CFI_CLANG|CFI_PERMISSIVE|LSM)[= ]' out/.config | sort
 
-          make O=out CC="clang" LLVM=1 \
-            KCFLAGS="-Wno-strict-prototypes -Wno-vla-extension -Wno-compound-token-split-by-macro" \
-            -j$(nproc)
+          # Only the Image is flashed; build it first so a dts problem can't block it
+          KCF="-Wno-strict-prototypes -Wno-vla-extension -Wno-compound-token-split-by-macro"
+          make O=out CC="clang" LLVM=1 KCFLAGS="$KCF" -j$(nproc) Image
+          make O=out CC="clang" LLVM=1 KCFLAGS="$KCF" -j$(nproc) dtbs \
+            || echo "::warning::dtbs failed (not packaged, only the Image is flashed)"
 
           echo "=== Kernel release: $(cat out/include/config/kernel.release) ==="
           strings out/arch/arm64/boot/Image | grep -q 'OPLUS_CHG\[P9415\]' \
