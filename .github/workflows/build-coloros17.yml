@@ -8,6 +8,7 @@ name: Build Feather Kernel 5.4.254 (lahaina) - ColorOS 17
 #   - Added here: close_range (syscall 436), CAP_PERFMON / CAP_BPF /
 #     CAP_CHECKPOINT_RESTORE (38-40), ReSukiSU manual hooks
 #   - Only the kernel Image is flashed; the stock dtb/dtbo are kept
+#   - OPLUS_VND_ENV_CHG_OP9_PRO=yes selects the OnePlus 9 charger driver
 
 on:
   push:
@@ -115,6 +116,11 @@ jobs:
           export SUBARCH="arm64"
           export BRAND_SHOW_FLAG=oneplus
           export TARGET_BUILD_VARIANT=user
+          # OplusKernelEnvConfig.mk turns this into CONFIG_CHG_FOR_OP9_PRO, which
+          # drivers/power/Makefile needs to build the OnePlus 9 / 9 Pro charger
+          # (oplus_chg: PM8350B, HL7227, P9415). Without it the generic OPPO
+          # charger is built instead (v1.4, which boots on OP9, has oplus_chg).
+          export OPLUS_VND_ENV_CHG_OP9_PRO=yes
 
           # Always present: drivers/Kconfig sources drivers/kernelsu/Kconfig
           # (5.4 kconfig has no osource). ROOT=none only turns CONFIG_KSU off.
@@ -172,6 +178,8 @@ jobs:
             -j$(nproc)
 
           echo "=== Kernel release: $(cat out/include/config/kernel.release) ==="
+          strings out/arch/arm64/boot/Image | grep -q 'OPLUS_CHG\[P9415\]' \
+            || { echo "::error::OnePlus 9 charger (oplus_chg) missing from Image"; exit 1; }
           ls -la out/arch/arm64/boot/Image
 
       - name: Package with AnyKernel3
